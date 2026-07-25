@@ -6,6 +6,7 @@
 #include "app_api.h"
 #include "_bus_hardware.h"
 #include "crc_bus.h"
+#include "ams_online_detect_policy.h"
 
 uint8_t bambubus_ams_map[4] = {0, 1, 2, 3};
 static void bambubus_build_static_serial(void);
@@ -91,15 +92,19 @@ void bambubus_long_package_analysis(uint8_t *buf, int data_length, bambubus_long
 
 bambubus_long_packge_data printer_data_long;
 
+// A printer that still holds our registration keeps polling this AMS well
+// inside the 1000 ms heartbeat window; one that forgot it goes silent towards
+// us while still broadcasting registration queries (the HMS 0500_409D state).
+static constexpr uint32_t kOnlineDetectConfirmSettleMs = 3000u;
+static constexpr uint32_t kOnlineDetectServiceSilenceMs = 1500u;
+
 static uint8_t online_detect_prefix_now = 0x0Cu;
-static bool have_registered = false;
-static uint8_t online_detect_phase = 0u;
+static ams_online_detect::State online_detect_state;
 
 static inline void online_detect_reset(void)
 {
-    have_registered = false;
+    ams_online_detect::reset(online_detect_state);
     online_detect_prefix_now = 0x0Cu;
-    online_detect_phase = 0u;
 }
 
 bambubus_package_type get_packge_type(unsigned char *buf, int length)
@@ -557,6 +562,7 @@ void get_package_motion(bambubus_printer_motion_package_struct *package_recv)
 
     const uint8_t fixed_ams_num = (uint8_t)BAMBU_BUS_AMS_NUM;
     if (in.ams_num != fixed_ams_num) return;
+    ams_online_detect::note_service_traffic(online_detect_state, time_ticks32());
 
     const uint8_t ams_idx = bambubus_ams_map[fixed_ams_num];
     if (!ams[ams_idx].online) return;
@@ -734,6 +740,7 @@ void get_package_stu_motion(bambubus_printer_stu_motion_package_struct *package_
 
     const uint8_t fixed_ams_num = (uint8_t)BAMBU_BUS_AMS_NUM;
     if (in.ams_num != fixed_ams_num) return;
+    ams_online_detect::note_service_traffic(online_detect_state, time_ticks32());
 
     const uint8_t ams_idx = bambubus_ams_map[fixed_ams_num];
     if (!ams[ams_idx].online) return;
@@ -846,18 +853,12 @@ void get_package_online_detect(unsigned char *buf, int length)
 
     if (buf[5] == 0x00)
     {
-        if (have_registered) return;
+        const ams_online_detect::QueryAction act =
+            ams_online_detect::on_query(online_detect_state);
+        if (act == ams_online_detect::QueryAction::stay_silent) return;
 
-        if (online_detect_phase == 0u)
-        {
-            online_detect_prefix_now = 0x0Cu;
-            online_detect_phase = 1u;
-        }
-        else
-        {
-            online_detect_prefix_now = 0x0Au;
-            online_detect_phase = 2u;
-        }
+        online_detect_prefix_now =
+            (act == ams_online_detect::QueryAction::offer_first) ? 0x0Cu : 0x0Au;
 
         online_detect_build_packet(ams_num, 0x00);
 
@@ -876,8 +877,7 @@ void get_package_online_detect(unsigned char *buf, int length)
     if (memcmp(online_detect_res + 7, buf + 7, 17) != 0)
         return;
 
-    have_registered = true;
-    online_detect_phase = 3u;
+    ams_online_detect::latch_confirm(online_detect_state, time_ticks32());
 
     uint8_t *out = bus_port_to_host.tx_build_buf();
     memcpy(out, online_detect_res, 29);
@@ -894,6 +894,7 @@ void get_package_long_packge_MC_online(unsigned char *buf, int length)
     if (printer_data_long.data_length < 1u) return;
     if (!ams[bambubus_ams_map[fixed_ams_num]].online) return;
     if (printer_data_long.datas[0] != fixed_ams_num) return;
+    ams_online_detect::note_service_traffic(online_detect_state, time_ticks32());
 
     unsigned char resp[6] = {fixed_ams_num, 0x00, 0x00, 0x00, 0x00, 0x00};
 
@@ -1186,6 +1187,14 @@ bambubus_package_type bambubus_run()
     static uint32_t last_hb_deadline = 0u;
     const uint32_t now = time_ticks32();
 
+    {
+        const ams_online_detect::Config cfg = {
+            ms_to_ticks32(kOnlineDetectConfirmSettleMs),
+            ms_to_ticks32(kOnlineDetectServiceSilenceMs),
+        };
+        ams_online_detect::poll(online_detect_state, cfg, now);
+    }
+
     int rx_len = 0;
     _bus_data_type t = _bus_data_type::none;
     uint8_t *buf = nullptr;
@@ -1288,9 +1297,11 @@ bambubus_package_type bambubus_run()
     {
         stu = bambubus_package_type::error;
         // Heartbeat lost: when the bus returns the printer re-runs AMS
-        // registration, and a still-latched have_registered would swallow
-        // that query unanswered (recurring HMS 0500_409D at print start
-        // that only a power cycle cleared). Re-arm while the bus is quiet.
+        // registration, and a still-latched registration would swallow that
+        // query unanswered (recurring HMS 0500_409D at print start that only a
+        // power cycle cleared). Re-arm immediately while the bus is quiet; the
+        // stale-registration re-offer in ams_online_detect is the belt-and-
+        // braces path for the case where the heartbeat never lapses.
         online_detect_reset();
     }
 
