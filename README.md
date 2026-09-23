@@ -19,6 +19,7 @@ This repository, [hyyz17200/BMCU-C-PJARCZAK-NONO](https://github.com/hyyz17200/B
 
 # New Feature
 
+- Spoof AMS version as v01.00.06.83 to match A1 firmware v01.07.00.00
 
 **The notes below are the original project's usage guide, kept so this copy can still be used. They describe Paweł Jarczak's firmware. The Ko-fi and Revolut links fund his work.**
 
