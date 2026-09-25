@@ -2063,7 +2063,8 @@ void AS5600_distance_updata(uint32_t now_ticks)
             if (g_as5600_fail[i] >= kAS5600_FAIL_TRIP) g_as5600_good[i] = 0u;
         }
 
-        if (!AS5600_is_good(i))
+        // Reject invalid samples immediately, independently of the health debounce.
+        if (!ok_now || !AS5600_is_good(i))
         {
             was_ok[i] = 0u;
             speed_as5600[i] = 0.0f;
