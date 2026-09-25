@@ -7,11 +7,30 @@
 #include "ch32v20x_dma.h"
 #include "ch32v20x_misc.h"
 #include "core_riscv.h"
+#include "hal/irq_wch.h"
+#include "hal/time_hw.h"
 #include "crc_bus.h"
 
 uint16_t bus_host_device_type=0x0000;
 
 DMA_InitTypeDef bus_uart1_dma_init_structure;
+namespace
+{
+constexpr uint32_t kPrinterTxTimeoutMs = 25u;
+uint32_t printer_tx_started_tick = 0u;
+
+// Shared by normal TC completion and fault recovery; caller masks interrupts.
+void printer_tx_stop()
+{
+    USART1->CTLR3 &= ~USART_DMAReq_Tx;
+    DMA1_Channel4->CFGR &= (uint16_t)(~DMA_CFGR1_EN);
+    DMA1->INTFCR = DMA1_FLAG_GL4 | DMA1_FLAG_TC4 | DMA1_FLAG_HT4 | DMA1_FLAG_TE4;
+    USART_ClearITPendingBit(USART1, USART_IT_TC);
+    GPIOA->BCR = GPIO_Pin_12;
+    bus_port_to_host.idle = true;
+}
+}
+
 void bus_uart1_init();
 void bus_uart1_dma_send(uint8_t *data, uint16_t length);
 
@@ -64,6 +83,8 @@ void bus_uart1_init()
     USART_Init(USART1, &USART_InitStructure);
     USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
     USART_ITConfig(USART1, USART_IT_TC, ENABLE);
+    USART_ITConfig(USART1, USART_IT_ERR, ENABLE);
+    USART_ITConfig(USART1, USART_IT_PE, ENABLE);
 
     NVIC_InitStructure.NVIC_IRQChannel = USART1_IRQn;
     NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
@@ -88,13 +109,35 @@ void bus_uart1_init()
     USART_Cmd(USART1, ENABLE);
 }
 
+void bus_uart1_tx_poll()
+{
+    // Do not race TC completion between checking idle and aborting a transfer.
+    const uint32_t irq_state = irq_save_wch();
+    if (!bus_port_to_host.idle)
+    {
+        const uint32_t timeout_ticks = time_hw_tpms * kPrinterTxTimeoutMs;
+        if ((DMA1->INTFR & DMA1_FLAG_TE4) != 0u ||
+            (timeout_ticks != 0u &&
+             (uint32_t)(time_ticks32() - printer_tx_started_tick) >= timeout_ticks))
+            printer_tx_stop();
+    }
+    irq_restore_wch(irq_state);
+}
+
 void bus_uart1_dma_send(unsigned char *data, uint16_t length)
 {
-    if (!bus_port_to_host.idle) return;
+    // A pending TC interrupt must not release DE halfway through TX startup.
+    const uint32_t irq_state = irq_save_wch();
+    if (!bus_port_to_host.idle)
+    {
+        irq_restore_wch(irq_state);
+        return;
+    }
 
     bus_port_to_host.idle = false;
 
     DMA1_Channel4->CFGR &= (uint16_t)(~DMA_CFGR1_EN);
+    DMA1->INTFCR = DMA1_FLAG_GL4 | DMA1_FLAG_TC4 | DMA1_FLAG_HT4 | DMA1_FLAG_TE4;
 
     DMA1_Channel4->MADDR = (uint32_t)data;
     DMA1_Channel4->CNTR  = length;
@@ -102,31 +145,30 @@ void bus_uart1_dma_send(unsigned char *data, uint16_t length)
     // DE = TX
     GPIOA->BSHR = GPIO_Pin_12;
 
-    // wyczyść TC
+    // Clear TC before starting a new transfer.
     USART_ClearITPendingBit(USART1, USART_IT_TC);
 
+    printer_tx_started_tick = time_ticks32();
     USART1->CTLR3 |= USART_DMAReq_Tx;
     DMA1_Channel4->CFGR |= DMA_CFGR1_EN;
+    irq_restore_wch(irq_state);
 }
 
 extern "C" void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART1_IRQHandler(void)
 {
-    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
+    const uint16_t status = (uint16_t)USART1->STATR;
+    const uint16_t errors = status &
+        (USART_FLAG_ORE | USART_FLAG_NE | USART_FLAG_FE | USART_FLAG_PE);
+    if (errors != 0u || (status & USART_FLAG_RXNE) != 0u)
     {
+        // STATR then DATAR clears RXNE and the RX error flags. Read only once.
         const uint8_t d = (uint8_t)USART_ReceiveData(USART1);
-        if (bus_port_to_host.idle) uart1_port_irq(d);
+        if (errors != 0u) bus_port_to_host.reset_rx_parser();
+        else if (bus_port_to_host.idle) uart1_port_irq(d);
     }
     if (USART_GetITStatus(USART1, USART_IT_TC) != RESET)
     {
-        USART_ClearITPendingBit(USART1, USART_IT_TC);
-        USART1->CTLR3 &= ~USART_DMAReq_Tx;
-        DMA1_Channel4->CFGR &= (uint16_t)(~DMA_CFGR1_EN);
-
-        // DE = RX
-        GPIOA->BCR = GPIO_Pin_12;
-
-        // TX done
-        bus_port_to_host.idle = true;
+        printer_tx_stop();
     }
 }
