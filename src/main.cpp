@@ -163,6 +163,16 @@ void ams_datas_save_run()
         g_fil_dirty &= (uint8_t)~(1u << fil);
 }
 
+// Select only the protocol identified by a real heartbeat. Silence at boot is offline.
+static bool host_link_offline(ahubus_package_type ahub, bambubus_package_type bambu)
+{
+    if (bus_host_device_type == host_device_type_ams)
+        return bambu == bambubus_package_type::error;
+    if (bus_host_device_type == host_device_type_ahub)
+        return ahub == ahubus_package_type::error;
+    return true;
+}
+
 int main(void)
 {
     SystemInit();
@@ -231,31 +241,22 @@ int main(void)
         const bambubus_package_type bambubus_stu = bambubus_run();
         bus_port_to_host.send_package();
 
-        static int error = 0;
+        if (bambubus_stu == bambubus_package_type::heartbeat)
+            bus_host_device_type = host_device_type_ams;
+        if (ahub_stu == ahubus_package_type::heartbeat)
+            bus_host_device_type = host_device_type_ahub;
 
-        if ((ahub_stu != ahubus_package_type::none) || (bambubus_stu != bambubus_package_type::none))
+        const int error = host_link_offline(ahub_stu, bambubus_stu) ? -1 : 0;
+        if (!error)
         {
-            if ((ahub_stu != ahubus_package_type::error) || (bambubus_stu != bambubus_package_type::error))
-            {
-                error = 0;
-
-                if (bambubus_stu == bambubus_package_type::heartbeat)
-                {
-                    SYS_RGB.set_RGB(0x38, 0x35, 0x32, 0);
-                    bus_host_device_type = host_device_type_ams;
-                }
-
-                if (ahub_stu == ahubus_package_type::heartbeat)
-                    bus_host_device_type = host_device_type_ahub;
-
-                ams_datas_save_run();
-                ams_state_save_run();
-            }
-            else
-            {
-                error = -1;
-                SYS_RGB.set_RGB(0x10, 0x00, 0x00, 0);
-            }
+            if (bambubus_stu == bambubus_package_type::heartbeat)
+                SYS_RGB.set_RGB(0x38, 0x35, 0x32, 0);
+            ams_datas_save_run();
+            ams_state_save_run();
+        }
+        else
+        {
+            SYS_RGB.set_RGB(0x10, 0x00, 0x00, 0);
         }
 
         Motion_control_run(error);

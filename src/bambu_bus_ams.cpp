@@ -7,14 +7,19 @@
 #include "_bus_hardware.h"
 #include "crc_bus.h"
 #include "ams_online_detect_policy.h"
+#include "bus_link.h"
 
 uint8_t bambubus_ams_map[4] = {0, 1, 2, 3};
 static void bambubus_build_static_serial(void);
-static uint32_t bambubus_heartbeat_deadline = 0u;
+static bus_link_t bambubus_link;
+static bus_link_state_t bambubus_link_prev = BUS_LINK_NOT_SEEN;
+static volatile uint32_t bambubus_heartbeat_ticks = 0u;
+static volatile bool bambubus_heartbeat_pending = false;
 
 void bambubus_heartbeat_seen_fast(void)
 {
-    bambubus_heartbeat_deadline = time_ticks32() + ms_to_ticks32(1000u);
+    bambubus_heartbeat_ticks = time_ticks32();
+    bambubus_heartbeat_pending = true;
 }
 
 bool package_check_crc16(uint8_t *data, int data_length)
@@ -31,7 +36,9 @@ bool package_check_crc16(uint8_t *data, int data_length)
 void bambubus_init()
 {
     bambubus_build_static_serial();
-    bambubus_heartbeat_deadline = 0u;
+    bambubus_heartbeat_pending = false;
+    bus_link_init(&bambubus_link);
+    bambubus_link_prev = BUS_LINK_NOT_SEEN;
 }
 
 void package_add_crc(uint8_t *data, int send_data_length) // 为数据包添加crc校验
@@ -1184,7 +1191,7 @@ bambubus_package_type bambubus_run()
 {
     bambubus_package_type stu = bambubus_package_type::none;
 
-    static uint32_t last_hb_deadline = 0u;
+    static bool hb_unreported = false;
     const uint32_t now = time_ticks32();
 
     {
@@ -1279,30 +1286,34 @@ bambubus_package_type bambubus_run()
         }
     }
 
-    uint32_t hb_deadline = 0u;
+    bool hb_new = false;
+    uint32_t hb_ticks = 0u;
     {
         const uint32_t s = irq_save_wch();
-        hb_deadline = bambubus_heartbeat_deadline;
+        hb_new = bambubus_heartbeat_pending;
+        hb_ticks = bambubus_heartbeat_ticks;
+        bambubus_heartbeat_pending = false;
         irq_restore_wch(s);
     }
 
-    if (stu == bambubus_package_type::none && hb_deadline != last_hb_deadline)
+    if (hb_new)
     {
-        last_hb_deadline = hb_deadline;
-        if (time_diff32(hb_deadline, now) > 0)
-            stu = bambubus_package_type::heartbeat;
+        bus_link_heartbeat(&bambubus_link, hb_ticks);
+        hb_unreported = true;
     }
 
-    if (time_diff32(now, hb_deadline) > 0)
-    {
-        stu = bambubus_package_type::error;
-        // Heartbeat lost: when the bus returns the printer re-runs AMS
-        // registration, and a still-latched registration would swallow that
-        // query unanswered (recurring HMS 0500_409D at print start that only a
-        // power cycle cleared). Re-arm immediately while the bus is quiet; the
-        // stale-registration re-offer in ams_online_detect is the belt-and-
-        // braces path for the case where the heartbeat never lapses.
+    const bus_link_state_t link = bus_link_poll(&bambubus_link, now, ms_to_ticks32(1000u));
+    // Re-arm once per outage. Keep a handshake completed while heartbeats are absent,
+    // and retain the independent per-AMS service-silence policy above.
+    if (bus_link_went_lost(&bambubus_link_prev, link))
         online_detect_reset();
+
+    if (link != BUS_LINK_ALIVE)
+        stu = bambubus_package_type::error;
+    else if (stu == bambubus_package_type::none && hb_unreported)
+    {
+        hb_unreported = false;
+        stu = bambubus_package_type::heartbeat;
     }
 
     return stu;
