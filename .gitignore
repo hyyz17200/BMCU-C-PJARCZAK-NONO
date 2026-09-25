@@ -1,3 +1,5 @@
 agent_docs/
 dist/
 *.bak
+.pio/
+__pycache__/
