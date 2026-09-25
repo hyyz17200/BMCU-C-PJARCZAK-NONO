@@ -2524,7 +2524,22 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
     else
     {
         for (uint8_t i = 0; i < kChCount; i++)
+        {
             MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 100, time_now);
+            // Cancel manual unload gestures before any sensor or time-step early exit.
+            // Reconnection must not resume an unload armed before the link was lost.
+            auto_unload_arm[i] = 0u;
+            auto_unload_active[i] = 0u;
+            auto_unload_blocked[i] = 0u;
+            auto_unload_arm_t0_ms[i] = 0ull;
+            auto_unload_active_t0_ms[i] = 0ull;
+            auto_unload_empty_t0_ms[i] = 0ull;
+            MOTOR_CONTROL[i].PID_speed.clear();
+            MOTOR_CONTROL[i].PID_pressure.clear();
+            MOTOR_CONTROL[i].pwm_zeroed = 1u;
+            _MOTOR_CONTROL::x_prev[i] = 0.0f;
+            Motion_control_set_PWM(i, 0);
+        }
     }
 
     for (uint8_t i = 0; i < kChCount; i++)
@@ -2625,6 +2640,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
         }
 
         const bool manual_empty_pull =
+            !error &&
             filament_channel_inserted[i] &&
             (MC_ONLINE_key_stu[i] == 0u) &&
             (MC_PULL_pct_f[i] > 80.0f) &&
