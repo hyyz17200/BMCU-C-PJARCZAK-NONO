@@ -135,7 +135,8 @@ int main(int argc, char** argv)
     const bool raised   = !strcmp(s, "raised_buffer"); // buffer raised during the change
     const bool reload   = !strcmp(s, "reload");        // the printer loads channel 1 again
     const bool removal  = !strcmp(s, "removal");       // channel 1 taken out, a new spool inserted
-    if (!stale && !window && !raised && !reload && !removal && strcmp(s, "baseline"))
+    const bool dropout  = !strcmp(s, "pullback_dropout"); // one empty key reading during the pull back
+    if (!stale && !window && !raised && !reload && !removal && !dropout && strcmp(s, "baseline"))
     {
         fprintf(stderr, "unknown scenario\n");
         return 2;
@@ -165,6 +166,7 @@ int main(int argc, char** argv)
 
         key1 = 2.2f;
         if (stale && t >= 1000u && t < 1150u) key1 = 1.55f;
+        if (dropout && t == 5500u) key1 = 0.10f;
         if (removal && t >= 9000u && t < 11000u) key1 = 0.10f;
         if (removal && t >= 11000u && gear - gear_spool < 30.0) key1 = 1.55f; // 2nd switch 30 mm further in
         if (removal && t == 9000u) { tip = -900.0; slack = 0.0; }
@@ -220,6 +222,7 @@ int main(int argc, char** argv)
     }
 
     check(t_park != 0u, "channel 1 was unloaded");
+    check(tip_park < -80.0, "the unload took the tip past the splitter");
     check(t_hold_end != 0u, "the hold ended");
     check(max_gear_held - gear_park < 0.5, "no feeding while the hold lasts");
     check(!stage2_after_park, "no Stage-2 push after the unload");

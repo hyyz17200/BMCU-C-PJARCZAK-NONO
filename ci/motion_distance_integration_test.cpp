@@ -169,4 +169,21 @@ int main()
     motor_motion_filamnet_pull_back_to_online_key(200001u);
     assert(filament_now_position[0] == filament_idle);
     assert(unload_hold_started[0]); // the finished unload starts the unload hold
+
+    // An empty key only ends a pull back after 60 ms of empty readings; a reading back starts the wait over.
+    a.filament[0].motion = _filament_motion::pull_back;
+    motor_motion_switch(300u);
+    assert(filament_now_position[0] == filament_pulling_back);
+    MC_ONLINE_key_stu[0] = 0u;
+    motor_motion_filamnet_pull_back_to_online_key(300000u);
+    motor_motion_filamnet_pull_back_to_online_key(300059u);
+    assert(filament_now_position[0] == filament_pulling_back);
+    MC_ONLINE_key_stu[0] = 1u;
+    motor_motion_filamnet_pull_back_to_online_key(300070u);
+    MC_ONLINE_key_stu[0] = 0u;
+    motor_motion_filamnet_pull_back_to_online_key(300080u);
+    motor_motion_filamnet_pull_back_to_online_key(300139u);
+    assert(filament_now_position[0] == filament_pulling_back);
+    motor_motion_filamnet_pull_back_to_online_key(300140u);
+    assert(filament_now_position[0] == filament_redetect);
 }

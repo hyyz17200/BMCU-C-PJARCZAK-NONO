@@ -7,7 +7,8 @@ Run `python ci/test_motion_distance.py` to exercise the production AS5600 count
 update and compensated pull-back functions with host hardware stubs in DM and
 non-DM configurations. It extracts these functions directly from the current
 source, checks rejected samples and count wrap, and preserves the existing
-compensation, jam target and redetect exits. It adds no motor timeouts or stall
+compensation, jam target and redetect exits. An empty key ends a pull back
+only after 60 ms of empty readings. It adds no motor timeouts or stall
 limits. The numerical tests cover long-uptime float odometer loss, the 95 mm
 pull, 10 m send cap and 120 mm DM Stage-2 distance. The filament-odometer tests
 cover one-count steps near 2048/5000 m, signed travel beyond 32-bit wrap, and
@@ -26,7 +27,9 @@ loaded and prints. From the end of the unload until another channel reaches
 on_use, the printer loads channel 1 again, or the filament is taken out, nothing
 may feed channel 1, including a DM Stage-2 armed while it printed; a raised
 buffer is still pulled back, and after the change the V10.5 idle control applies
-again. The model does not establish printer or motor acceptance.
+again. Every unload must take the tip past the splitter, also with one empty key
+reading in the middle of the pull back. The model does not establish printer or
+motor acceptance.
 
 Run `python ci/test_build_tools.py` with Python 3 and Bash (Git Bash on Windows).
 It injects build and publication failures, checks path protection and dependency

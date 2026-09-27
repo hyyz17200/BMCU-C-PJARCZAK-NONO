@@ -2189,6 +2189,11 @@ static uint32_t before_pb_last_cnt[4]  = {0u,0u,0u,0u};
 static float  before_pb_retracted_m[4] = {0,0,0,0};
 static int8_t before_pb_sign[4]        = {0,0,0,0};
 
+// A pull back only ends early on 'no filament' once the key has read empty this long. One bad reading would
+// otherwise end the unload with the tip still in the shared splitter, and the printer is told it is done.
+static uint64_t pull_back_empty_t0[4] = {0ull, 0ull, 0ull, 0ull};
+static constexpr uint64_t PULL_BACK_EMPTY_CONFIRM_MS = 60ull;
+
 static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
 {
     bool wait = false;
@@ -2205,16 +2210,23 @@ static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
             const float target = filament_pull_back_target[i];
             const float d = motion_travel_m(as5600_position(i), filament_pull_back_cnt[i]);
 
+            if (MC_ONLINE_key_stu[i] != 0)          pull_back_empty_t0[i] = 0ull;
+            else if (pull_back_empty_t0[i] == 0ull) pull_back_empty_t0[i] = time_now;
+            const bool empty_confirmed = (pull_back_empty_t0[i] != 0ull) &&
+                                         ((time_now - pull_back_empty_t0[i]) >= PULL_BACK_EMPTY_CONFIRM_MS);
+
             if (target <= 0.0f || d >= target)
             {
+                pull_back_empty_t0[i] = 0ull;
                 g_pull_remain_m[i]  = 0.0f;
                 g_pull_speed_set[i] = -PULL_V_FAST;
                 MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 100, time_now);
                 filament_pull_back_target[i] = motion_control_pull_back_distance;
                 filament_now_position[i] = filament_redetect;
             }
-            else if (MC_ONLINE_key_stu[i] == 0)
+            else if (empty_confirmed)
             {
+                pull_back_empty_t0[i] = 0ull;
                 g_pull_remain_m[i]  = 0.0f;
                 g_pull_speed_set[i] = -PULL_V_FAST;
                 MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 100, time_now);
