@@ -149,10 +149,13 @@ static const uint16_t      AS5600_SDA_PIN [4] = { GPIO_Pin_0, GPIO_Pin_15, GPIO_
 
 float speed_as5600[4] = {0, 0, 0, 0};
 
-// Only accepted AS5600 steps advance these positions. Motion distances use
-// wrapping 32-bit differences; printer telemetry uses the full signed count.
-static uint32_t as5600_count[4] = {0u, 0u, 0u, 0u};
+// One accepted-step accumulator feeds both motion distances and telemetry.
 static int64_t as5600_odometer_count[4] = {0, 0, 0, 0};
+static inline uint32_t as5600_position(uint8_t channel)
+{
+    // Unsigned conversion preserves the modulo-2^32 position in both directions.
+    return (uint32_t)as5600_odometer_count[channel];
+}
 static_assert(MOTION_MM_PER_COUNT == -kAS5600_MM_PER_CNT, "AS5600 distance scales must match");
 // ===== AS5600 health gate (anti-runaway) =====
 static uint8_t g_as5600_good[4]     = {0,0,0,0};
@@ -809,7 +812,7 @@ public:
             send_start_ms = time_now;
             send_stop_latch = false;
             send_len_abort = 0;
-            send_start_cnt = as5600_count[CHx];
+            send_start_cnt = as5600_position(CHx);
         }
 
         if (_motion == filament_motion_enum::filament_motion_pull) {
@@ -1086,7 +1089,7 @@ public:
                     if (filament_channel_inserted[CHx] && (dm_loaded[CHx] == 0u))
                     {
                         const uint8_t ks = MC_ONLINE_key_stu[CHx];
-                        const uint32_t cur_cnt = as5600_count[CHx];
+                        const uint32_t cur_cnt = as5600_position(CHx);
 
                         if (dm_fail_latch[CHx])
                         {
@@ -1620,7 +1623,7 @@ public:
                     if (!send_len_abort)
                     {
                         constexpr float SEND_MAX_M = 10.0f;
-                        const float moved_m = motion_travel_m(as5600_count[CHx], send_start_cnt);
+                        const float moved_m = motion_travel_m(as5600_position(CHx), send_start_cnt);
                         if (moved_m >= SEND_MAX_M) send_len_abort = 1;
                     }
 
@@ -2071,7 +2074,6 @@ void AS5600_distance_updata(uint32_t now_ticks)
         {
             const float dist_mm = (float)diff * kAS5600_MM_PER_CNT;
             speed_as5600[i] = dist_mm * ((1000000.0f * (float)tpus) / (float)dt);
-            as5600_count[i] += (uint32_t)diff;
             if (diff != 0)
             {
                 as5600_odometer_count[i] += diff;
@@ -2132,7 +2134,7 @@ static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
             MC_STU_RGB_set_latch(i, 0xFFu, 0x00u, 0xFFu, time_now, 1u);
 
             const float target = filament_pull_back_target[i];
-            const float d = motion_travel_m(as5600_count[i], filament_pull_back_cnt[i]);
+            const float d = motion_travel_m(as5600_position(i), filament_pull_back_cnt[i]);
 
             if (target <= 0.0f || d >= target)
             {
@@ -2269,7 +2271,7 @@ static void motor_motion_switch(uint64_t time_now)
                 MC_STU_RGB_set_latch(num, 0xA0u, 0x2Du, 0xFFu, time_now, 1u);
                 filament_now_position[num] = filament_pulling_back;
 
-                filament_pull_back_cnt[num] = as5600_count[num];
+                filament_pull_back_cnt[num] = as5600_position(num);
 
                 float target;
                 if (g_on_use_jam_latch[num])
@@ -2305,13 +2307,13 @@ static void motor_motion_switch(uint64_t time_now)
                 if (filament_now_position[num] != filament_before_pull_back)
                 {
                     filament_now_position[num] = filament_before_pull_back;
-                    before_pb_last_cnt[num]    = as5600_count[num];
+                    before_pb_last_cnt[num]    = as5600_position(num);
                     before_pb_retracted_m[num] = 0.0f;
                     before_pb_sign[num]        = 0;
                 }
 
                 {
-                    const uint32_t cnt = as5600_count[num];
+                    const uint32_t cnt = as5600_position(num);
                     const float dm = -motion_delta_m(cnt, before_pb_last_cnt[num]);
                     before_pb_last_cnt[num] = cnt;
 
