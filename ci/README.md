@@ -2,7 +2,14 @@
 
 Run `python ci/test_printer_bus.py` with a host C++ compiler on PATH. This exercises
 the production bus transport using hardware stubs. Run `pio test -e native`
-for the WS2812 frame-cache tests.
+for the WS2812 frame-cache, AS5600 sample/direction and count-based distance tests.
+Run `python ci/test_motion_distance.py` to exercise the production AS5600 count
+update and compensated pull-back functions with host hardware stubs in DM and
+non-DM configurations. It extracts these functions directly from the current
+source, checks rejected samples and count wrap, and preserves the existing
+compensation, jam target and redetect exits. It adds no motor timeouts or stall
+limits. The numerical tests cover long-uptime float odometer loss, the 95 mm
+pull, 10 m send cap and 120 mm DM Stage-2 distance.
 
 Run `python ci/test_build_tools.py` with Python 3 and Bash (Git Bash on Windows).
 It injects build and publication failures, checks path protection and dependency

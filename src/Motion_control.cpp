@@ -5,6 +5,7 @@
 #include "_bus_hardware.h"
 #include "many_soft_AS5600.h"
 #include "as5600_sample.h"
+#include "motion_distance.h"
 #include "app_api.h"
 #include "hal/time_hw.h"
 
@@ -147,6 +148,11 @@ static GPIO_TypeDef* const AS5600_SDA_PORT[4] = { GPIOD, GPIOC, GPIOC, GPIOC };
 static const uint16_t      AS5600_SDA_PIN [4] = { GPIO_Pin_0, GPIO_Pin_15, GPIO_Pin_14, GPIO_Pin_13 };
 
 float speed_as5600[4] = {0, 0, 0, 0};
+
+// Only accepted AS5600 steps advance this wrapping position. Motion distances
+// use differences of it; the float odometer remains printer telemetry only.
+static uint32_t as5600_count[4] = {0u, 0u, 0u, 0u};
+static_assert(MOTION_MM_PER_COUNT == -kAS5600_MM_PER_CNT, "AS5600 distance scales must match");
 // ===== AS5600 health gate (anti-runaway) =====
 static uint8_t g_as5600_good[4]     = {0,0,0,0};
 static uint8_t g_as5600_fail[4]     = {0,0,0,0};
@@ -237,7 +243,7 @@ static uint8_t  dm_autoload_gate[4]     = {0,0,0,0}; // 0=allow Stage1, 1=block 
 static uint8_t  dm_auto_try[4]          = {0,0,0,0};   // abort count (stage2)
 static uint64_t dm_auto_t0_ms[4]        = {0ull,0ull,0ull,0ull};
 static float    dm_auto_remain_m[4]     = {0,0,0,0};
-static float    dm_auto_last_m[4]       = {0,0,0,0};
+static uint32_t dm_auto_last_cnt[4]     = {0u,0u,0u,0u};
 
 static uint64_t dm_loaded_drop_t0_ms[4] = {0ull,0ull,0ull,0ull};
 #endif
@@ -754,7 +760,7 @@ public:
     uint64_t on_use_hi_gate_t0_ms = 0ull;
 
     uint64_t send_start_ms = 0;
-    float    send_start_m  = 0.0f;
+    uint32_t send_start_cnt = 0u;
     uint8_t  send_len_abort = 0;
 
     uint64_t pull_start_ms = 0;
@@ -802,7 +808,7 @@ public:
             send_start_ms = time_now;
             send_stop_latch = false;
             send_len_abort = 0;
-            send_start_m = ams[motion_control_ams_num].filament[CHx].meters;
+            send_start_cnt = as5600_count[CHx];
         }
 
         if (_motion == filament_motion_enum::filament_motion_pull) {
@@ -815,7 +821,7 @@ public:
             send_start_ms = 0;
             send_stop_latch = false;
             send_len_abort = 0;
-            send_start_m = 0.0f;
+            send_start_cnt = 0u;
         }
 
         if (prev == filament_motion_enum::filament_motion_pull &&
@@ -1079,8 +1085,7 @@ public:
                     if (filament_channel_inserted[CHx] && (dm_loaded[CHx] == 0u))
                     {
                         const uint8_t ks = MC_ONLINE_key_stu[CHx];
-                        auto &A = ams[motion_control_ams_num];
-                        const float cur_m = A.filament[CHx].meters;
+                        const uint32_t cur_cnt = as5600_count[CHx];
 
                         if (dm_fail_latch[CHx])
                         {
@@ -1106,7 +1111,7 @@ public:
                                     dm_auto_state[CHx]    = DM_AUTO_S2_PUSH;
                                     dm_auto_try[CHx]      = 0u;
                                     dm_auto_remain_m[CHx] = DM_AUTO_S2_TARGET_M;
-                                    dm_auto_last_m[CHx]   = cur_m;
+                                    dm_auto_last_cnt[CHx] = cur_cnt;
                                 }
                             }
 
@@ -1142,7 +1147,7 @@ public:
                                     dm_auto_state[CHx]    = DM_AUTO_S2_PUSH;
                                     dm_auto_try[CHx]      = 0u;
                                     dm_auto_remain_m[CHx] = DM_AUTO_S2_TARGET_M;
-                                    dm_auto_last_m[CHx]   = cur_m;
+                                    dm_auto_last_cnt[CHx] = cur_cnt;
                                 }
                                 else if ((now_ms - dm_auto_t0_ms[CHx]) >= DM_AUTO_S1_TIMEOUT_MS)
                                 {
@@ -1199,8 +1204,8 @@ public:
 
                                 // remain -= moved
                                 {
-                                    const float moved = absf(cur_m - dm_auto_last_m[CHx]);
-                                    dm_auto_last_m[CHx] = cur_m;
+                                    const float moved = motion_travel_m(cur_cnt, dm_auto_last_cnt[CHx]);
+                                    dm_auto_last_cnt[CHx] = cur_cnt;
 
                                     float r = dm_auto_remain_m[CHx] - moved;
                                     if (r < 0.0f) r = 0.0f;
@@ -1213,7 +1218,7 @@ public:
                                     if (t < 255u) t++;
                                     dm_auto_try[CHx] = t;
 
-                                    dm_auto_last_m[CHx] = cur_m;
+                                    dm_auto_last_cnt[CHx] = cur_cnt;
 
                                     if (t >= 3u)
                                     {
@@ -1259,8 +1264,8 @@ public:
 
                                 // remain += moved
                                 {
-                                    const float moved = absf(cur_m - dm_auto_last_m[CHx]);
-                                    dm_auto_last_m[CHx] = cur_m;
+                                    const float moved = motion_travel_m(cur_cnt, dm_auto_last_cnt[CHx]);
+                                    dm_auto_last_cnt[CHx] = cur_cnt;
 
                                     float r = dm_auto_remain_m[CHx] + moved;
                                     if (r > DM_AUTO_S2_TARGET_M) r = DM_AUTO_S2_TARGET_M;
@@ -1271,7 +1276,7 @@ public:
 
                                 if ((MC_PULL_pct_f[CHx] <= DM_AUTO_BUF_RECOVER_PCT) || (ks == 2u))
                                 {
-                                    dm_auto_last_m[CHx] = cur_m;
+                                    dm_auto_last_cnt[CHx] = cur_cnt;
 
                                     if (ks == 1u)
                                     {
@@ -1614,7 +1619,7 @@ public:
                     if (!send_len_abort)
                     {
                         constexpr float SEND_MAX_M = 10.0f;
-                        const float moved_m = absf(ams[motion_control_ams_num].filament[CHx].meters - send_start_m);
+                        const float moved_m = motion_travel_m(as5600_count[CHx], send_start_cnt);
                         if (moved_m >= SEND_MAX_M) send_len_abort = 1;
                     }
 
@@ -2066,6 +2071,7 @@ void AS5600_distance_updata(uint32_t now_ticks)
             const float dist_mm = (float)diff * kAS5600_MM_PER_CNT;
             speed_as5600[i] = dist_mm * ((1000000.0f * (float)tpus) / (float)dt);
             A.filament[i].meters += dist_mm * 0.001f;
+            as5600_count[i] += (uint32_t)diff;
             break;
         }
         case AS5600_TRACK_SKIP:
@@ -2093,7 +2099,7 @@ enum filament_now_position_enum
 };
 
 static filament_now_position_enum filament_now_position[4];
-static float filament_pull_back_meters[4];
+static uint32_t filament_pull_back_cnt[4];
 
 static float filament_pull_back_target[4] = {
     motion_control_pull_back_distance,
@@ -2103,7 +2109,7 @@ static float filament_pull_back_target[4] = {
 };
 
 // BEFORE_PULLBACK: zapis realnie "wycofanej" drogi (m) (sumowanie całego wycofania)
-static float  before_pb_last_m[4]      = {0,0,0,0};
+static uint32_t before_pb_last_cnt[4]  = {0u,0u,0u,0u};
 static float  before_pb_retracted_m[4] = {0,0,0,0};
 static int8_t before_pb_sign[4]        = {0,0,0,0};
 
@@ -2121,7 +2127,7 @@ static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
             MC_STU_RGB_set_latch(i, 0xFFu, 0x00u, 0xFFu, time_now, 1u);
 
             const float target = filament_pull_back_target[i];
-            const float d = absf(A.filament[i].meters - filament_pull_back_meters[i]);
+            const float d = motion_travel_m(as5600_count[i], filament_pull_back_cnt[i]);
 
             if (target <= 0.0f || d >= target)
             {
@@ -2258,7 +2264,7 @@ static void motor_motion_switch(uint64_t time_now)
                 MC_STU_RGB_set_latch(num, 0xA0u, 0x2Du, 0xFFu, time_now, 1u);
                 filament_now_position[num] = filament_pulling_back;
 
-                filament_pull_back_meters[num] = A.filament[num].meters;
+                filament_pull_back_cnt[num] = as5600_count[num];
 
                 float target;
                 if (g_on_use_jam_latch[num])
@@ -2281,7 +2287,7 @@ static void motor_motion_switch(uint64_t time_now)
 
                 before_pb_retracted_m[num] = 0.0f;
                 before_pb_sign[num]        = 0;
-                before_pb_last_m[num]      = filament_pull_back_meters[num];
+                before_pb_last_cnt[num]    = filament_pull_back_cnt[num];
 
                 MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_pull, 100, time_now);
                 break;
@@ -2294,15 +2300,15 @@ static void motor_motion_switch(uint64_t time_now)
                 if (filament_now_position[num] != filament_before_pull_back)
                 {
                     filament_now_position[num] = filament_before_pull_back;
-                    before_pb_last_m[num]      = A.filament[num].meters;
+                    before_pb_last_cnt[num]    = as5600_count[num];
                     before_pb_retracted_m[num] = 0.0f;
                     before_pb_sign[num]        = 0;
                 }
 
                 {
-                    const float m  = A.filament[num].meters;
-                    const float dm = m - before_pb_last_m[num];
-                    before_pb_last_m[num] = m;
+                    const uint32_t cnt = as5600_count[num];
+                    const float dm = -motion_delta_m(cnt, before_pb_last_cnt[num]);
+                    before_pb_last_cnt[num] = cnt;
 
                     const float pct = MC_PULL_pct_f[num];
                     const bool want_retract = (pct > 50.25f);
@@ -2425,7 +2431,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
             dm_auto_try[ch]          = 0u;
             dm_auto_t0_ms[ch]        = 0ull;
             dm_auto_remain_m[ch]     = 0.0f;
-            dm_auto_last_m[ch]       = 0.0f;
+            dm_auto_last_cnt[ch]     = 0u;
             dm_loaded_drop_t0_ms[ch] = 0ull;
             dm_autoload_gate[ch]     = 0u;
             continue;
@@ -2444,7 +2450,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
             dm_auto_try[ch]          = 0u;
             dm_auto_t0_ms[ch]        = 0ull;
             dm_auto_remain_m[ch]     = 0.0f;
-            dm_auto_last_m[ch]       = 0.0f;
+            dm_auto_last_cnt[ch]     = 0u;
             dm_loaded_drop_t0_ms[ch] = 0ull;
             continue;
         }
@@ -2462,7 +2468,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
                 dm_auto_try[ch]      = 0u;
                 dm_auto_t0_ms[ch]    = 0ull;
                 dm_auto_remain_m[ch] = 0.0f;
-                dm_auto_last_m[ch]   = 0.0f;
+                dm_auto_last_cnt[ch] = 0u;
             }
         }
         else
@@ -3052,7 +3058,7 @@ void Motion_control_init()
                 dm_auto_try[ch]          = 0u;
                 dm_auto_t0_ms[ch]        = 0ull;
                 dm_auto_remain_m[ch]     = 0.0f;
-                dm_auto_last_m[ch]       = 0.0f;
+                dm_auto_last_cnt[ch]     = 0u;
                 dm_loaded_drop_t0_ms[ch] = 0ull;
                 dm_autoload_gate[ch]     = 0u;
                 continue;
@@ -3068,7 +3074,7 @@ void Motion_control_init()
             dm_auto_try[ch]          = 0u;
             dm_auto_t0_ms[ch]        = 0ull;
             dm_auto_remain_m[ch]     = 0.0f;
-            dm_auto_last_m[ch]       = 0.0f;
+            dm_auto_last_cnt[ch]     = 0u;
             dm_loaded_drop_t0_ms[ch] = 0ull;
         }
     #endif
