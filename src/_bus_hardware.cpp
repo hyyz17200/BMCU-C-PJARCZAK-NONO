@@ -158,8 +158,8 @@ extern "C" void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-
 void USART1_IRQHandler(void)
 {
     const uint16_t status = (uint16_t)USART1->STATR;
-    const uint16_t errors = status &
-        (USART_FLAG_ORE | USART_FLAG_NE | USART_FLAG_FE | USART_FLAG_PE);
+    // NE still delivers the majority-voted byte: parity and the frame CRCs judge it.
+    const uint16_t errors = status & (USART_FLAG_ORE | USART_FLAG_FE | USART_FLAG_PE);
     if (errors != 0u || (status & USART_FLAG_RXNE) != 0u)
     {
         // STATR then DATAR clears RXNE and the RX error flags. Read only once.

@@ -66,7 +66,7 @@ int main()
     CHECK(memcmp(published, request, 8) == 0);
     release();
 
-    for (uint32_t error : {USART_FLAG_ORE, USART_FLAG_NE, USART_FLAG_FE, USART_FLAG_PE})
+    for (uint32_t error : {USART_FLAG_ORE, USART_FLAG_FE, USART_FLAG_PE})
     {
         receive(0x3d); receive(0xc5);
         const unsigned reads = USART1->DATAR.reads;
@@ -78,6 +78,13 @@ int main()
         CHECK(memcmp(bus_port_to_host.bus_recv_data_ptr, request, 8) == 0);
         release();
     }
+    // A noise flag keeps the voted byte: the frame is published and NE is cleared.
+    for (unsigned i = 0; i < sizeof(request); ++i)
+        receive(request[i], i == 5 ? USART_FLAG_NE : 0u);
+    CHECK(!(USART1->STATR & (15u | USART_FLAG_RXNE)));
+    CHECK(bus_port_to_host.recv_data_len == 8);
+    CHECK(memcmp(bus_port_to_host.bus_recv_data_ptr, request, 8) == 0);
+    release();
     // Error without RXNE still clears through one status/data read sequence.
     receive(0x3d);
     USART1->STATR |= USART_FLAG_ORE;
@@ -88,7 +95,7 @@ int main()
     // A damaged fast heartbeat must not survive in the parser's skip state.
     request[4] = 0x20;
     for (unsigned i = 0; i < 5; ++i) receive(request[i]);
-    receive(0, USART_FLAG_NE);
+    receive(0, USART_FLAG_FE);
     receive(0); receive(0); receive(0);
     CHECK(heartbeats == 0);
     frame(); CHECK(heartbeats == 1);
