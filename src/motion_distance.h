@@ -30,3 +30,11 @@ static inline float motion_delta_m(uint32_t pos, uint32_t start)
     const uint32_t d = pos - start;
     return (d > 0x80000000u) ? -motion_counts_to_m(0u - d) : motion_counts_to_m(d);
 }
+
+// Rebuild printer telemetry from the full signed count, never from rounded
+// per-sample float sums. The 1 m origin matches _filament::init(). Double is
+// only an intermediate conversion: the unchanged wire field is still float32.
+static inline float motion_odometer_m(int64_t counts)
+{
+    return (float)(1.0 + (double)counts * ((double)MOTION_MM_PER_COUNT * -0.001));
+}

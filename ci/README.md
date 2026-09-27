@@ -9,7 +9,11 @@ non-DM configurations. It extracts these functions directly from the current
 source, checks rejected samples and count wrap, and preserves the existing
 compensation, jam target and redetect exits. It adds no motor timeouts or stall
 limits. The numerical tests cover long-uptime float odometer loss, the 95 mm
-pull, 10 m send cap and 120 mm DM Stage-2 distance.
+pull, 10 m send cap and 120 mm DM Stage-2 distance. The filament-odometer tests
+cover one-count steps near 2048/5000 m, signed travel beyond 32-bit wrap, and
+the final float32 telemetry rounding. Telemetry is rebuilt from signed 64-bit
+counts on accepted nonzero moves; the packet format and 1 m boot origin stay
+unchanged.
 
 Run `python ci/test_build_tools.py` with Python 3 and Bash (Git Bash on Windows).
 It injects build and publication failures, checks path protection and dependency

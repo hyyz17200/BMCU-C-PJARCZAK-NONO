@@ -49,7 +49,12 @@ static void near(float actual, float expected)
 int main()
 {
     auto &a = ams[motion_control_ams_num];
-    for (auto &f : a.filament) f.meters = 5000.0f;
+    const int64_t initial_odometer = -(int64_t)(4999.0 / ((double)MOTION_MM_PER_COUNT * 0.001));
+    for (unsigned i = 0; i < 4; ++i)
+    {
+        as5600_odometer_count[i] = initial_odometer;
+        a.filament[i].meters = motion_odometer_m(initial_odometer);
+    }
     uint32_t ticks = 0u;
     const auto poll = [&]() { ticks += time_hw_tpms; AS5600_distance_updata(ticks); };
     poll(); // first healthy sample
@@ -65,7 +70,12 @@ int main()
     assert(as5600_count[0] == 10u);
     assert(as5600_count[1] == 0u - 10u);
     assert(as5600_count[2] == 0u && as5600_count[3] == 0u);
-    for (auto &f : a.filament) assert(f.meters == 5000.0f);
+    assert(as5600_odometer_count[0] == initial_odometer + 10);
+    assert(as5600_odometer_count[1] == initial_odometer - 10);
+    assert(as5600_odometer_count[2] == initial_odometer);
+    assert(as5600_odometer_count[3] == initial_odometer);
+    for (unsigned i = 0; i < 4; ++i)
+        assert(a.filament[i].meters == motion_odometer_m(as5600_odometer_count[i]));
 
     MC_AS5600.online[2] = true;
     MC_AS5600.raw_angle[2] = 1020u;
@@ -91,6 +101,12 @@ int main()
     MC_AS5600.raw_angle[0] = 3010u;
     poll();
     assert(as5600_count[0] == 30u);
+    const int32_t totals[4] = {30, -10, 20, -20};
+    for (unsigned i = 0; i < 4; ++i)
+    {
+        assert(as5600_odometer_count[i] == initial_odometer + totals[i]);
+        assert(a.filament[i].meters == motion_odometer_m(as5600_odometer_count[i]));
+    }
 
     // Preserve compensation in both encoder directions, through count wrap and
     // at a telemetry value too large to observe any of these steps.

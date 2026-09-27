@@ -149,9 +149,10 @@ static const uint16_t      AS5600_SDA_PIN [4] = { GPIO_Pin_0, GPIO_Pin_15, GPIO_
 
 float speed_as5600[4] = {0, 0, 0, 0};
 
-// Only accepted AS5600 steps advance this wrapping position. Motion distances
-// use differences of it; the float odometer remains printer telemetry only.
+// Only accepted AS5600 steps advance these positions. Motion distances use
+// wrapping 32-bit differences; printer telemetry uses the full signed count.
 static uint32_t as5600_count[4] = {0u, 0u, 0u, 0u};
+static int64_t as5600_odometer_count[4] = {0, 0, 0, 0};
 static_assert(MOTION_MM_PER_COUNT == -kAS5600_MM_PER_CNT, "AS5600 distance scales must match");
 // ===== AS5600 health gate (anti-runaway) =====
 static uint8_t g_as5600_good[4]     = {0,0,0,0};
@@ -2070,8 +2071,12 @@ void AS5600_distance_updata(uint32_t now_ticks)
         {
             const float dist_mm = (float)diff * kAS5600_MM_PER_CNT;
             speed_as5600[i] = dist_mm * ((1000000.0f * (float)tpus) / (float)dt);
-            A.filament[i].meters += dist_mm * 0.001f;
             as5600_count[i] += (uint32_t)diff;
+            if (diff != 0)
+            {
+                as5600_odometer_count[i] += diff;
+                A.filament[i].meters = motion_odometer_m(as5600_odometer_count[i]);
+            }
             break;
         }
         case AS5600_TRACK_SKIP:
