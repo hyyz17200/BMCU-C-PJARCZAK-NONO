@@ -17,6 +17,17 @@ only its low 32 bits, while telemetry is rebuilt directly with float32 arithmeti
 on accepted nonzero moves. No double conversion or second accumulator is used;
 the packet format and 1 m boot origin stay unchanged.
 
+Run `python ci/test_unload_hold.py` to compile the whole production
+`src/Motion_control.cpp` unchanged against `ci/motion_control_test_hardware.h`,
+with `set_motion()` from `src/bambu_bus_ams.cpp` and the loaded-channel state
+from `src/main.cpp` extracted verbatim, in DM and non-DM configurations. A small
+filament model runs an A1 filament change: channel 1 is unloaded, channel 4 is
+loaded and prints. From the end of the unload until another channel reaches
+on_use, the printer loads channel 1 again, or the filament is taken out, nothing
+may feed channel 1, including a DM Stage-2 armed while it printed; a raised
+buffer is still pulled back, and after the change the V10.5 idle control applies
+again. The model does not establish printer or motor acceptance.
+
 Run `python ci/test_build_tools.py` with Python 3 and Bash (Git Bash on Windows).
 It injects build and publication failures, checks path protection and dependency
 validation, and exercises all 520 packaging configurations with a simulated compiler.

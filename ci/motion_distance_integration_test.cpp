@@ -38,6 +38,8 @@ struct MotorStub
     void set_motion(filament_motion_enum next, uint64_t, uint64_t) { motion = next; }
 } MOTOR_CONTROL[4];
 void MC_STU_RGB_set_latch(uint8_t, uint8_t, uint8_t, uint8_t, uint64_t, uint8_t) {}
+uint8_t unload_hold_started[4] = {};
+static void unload_hold_start(uint8_t ch) { unload_hold_started[ch] = 1u; }
 
 #include "motion_test_functions.inc"
 
@@ -162,7 +164,9 @@ int main()
     motor_motion_filamnet_pull_back_to_online_key(200000u);
     assert(filament_now_position[0] == filament_redetect);
     assert(MOTOR_CONTROL[0].motion == filament_motion_enum::filament_motion_redetect);
+    assert(!unload_hold_started[0]);
     MC_ONLINE_key_stu[0] = 1u;
     motor_motion_filamnet_pull_back_to_online_key(200001u);
     assert(filament_now_position[0] == filament_idle);
+    assert(unload_hold_started[0]); // the finished unload starts the unload hold
 }
