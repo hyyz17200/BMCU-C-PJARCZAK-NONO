@@ -18,6 +18,7 @@ namespace
 {
 constexpr uint32_t kPrinterTxTimeoutMs = 25u;
 uint32_t printer_tx_started_tick = 0u;
+bool printer_rx_discard_next = false; // Used only by the ISR after bus_init().
 
 // Shared by normal TC completion and fault recovery; caller masks interrupts.
 void printer_tx_stop()
@@ -45,6 +46,7 @@ void bus_init()
 {
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_CRC, ENABLE);
     bus_crc_init();
+    printer_rx_discard_next = false;
     bus_port_to_host.init(bus_port_to_host_send_func);
     bus_uart1_init();
 }
@@ -83,8 +85,10 @@ void bus_uart1_init()
     USART_Init(USART1, &USART_InitStructure);
     USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
     USART_ITConfig(USART1, USART_IT_TC, ENABLE);
-    USART_ITConfig(USART1, USART_IT_ERR, ENABLE);
-    USART_ITConfig(USART1, USART_IT_PE, ENABLE);
+    // Handle reception and error flags together when RXNE says the byte is ready.
+    // PE can interrupt before RXNE; ERR requires RX DMA, which this driver does not use.
+    USART_ITConfig(USART1, USART_IT_ERR, DISABLE);
+    USART_ITConfig(USART1, USART_IT_PE, DISABLE);
 
     NVIC_InitStructure.NVIC_IRQChannel = USART1_IRQn;
     NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
@@ -160,11 +164,22 @@ void USART1_IRQHandler(void)
     const uint16_t status = (uint16_t)USART1->STATR;
     // NE still delivers the majority-voted byte: parity and the frame CRCs judge it.
     const uint16_t errors = status & (USART_FLAG_ORE | USART_FLAG_FE | USART_FLAG_PE);
-    if (errors != 0u || (status & USART_FLAG_RXNE) != 0u)
+    // Without overrun, follow RM 18.10.1: wait for RXNE before clearing PE.
+    const bool rx_ready = (status & USART_FLAG_RXNE) != 0u;
+    // ORE holds the RXNE interrupt request active, even if no byte is ready.
+    // Clear it even with PE set: waiting for another byte could starve the main loop.
+    const bool overrun = (status & USART_FLAG_ORE) != 0u;
+    if (rx_ready || overrun)
     {
         // STATR then DATAR clears RXNE and the RX error flags. Read only once.
         const uint8_t d = (uint8_t)USART_ReceiveData(USART1);
-        if (errors != 0u) bus_port_to_host.reset_rx_parser();
+        const bool discard = printer_rx_discard_next;
+        if (rx_ready) printer_rx_discard_next = false;
+        // An ORE cleanup before RXNE may clear PE for a byte still arriving.
+        // Discard the next received byte once, even if its error flag is now clear.
+        // This may cost a good frame's first byte; cleanup/TC without RXNE cannot consume it.
+        else if ((status & USART_FLAG_PE) != 0u) printer_rx_discard_next = true;
+        if (errors != 0u || discard) bus_port_to_host.reset_rx_parser();
         else if (bus_port_to_host.idle) uart1_port_irq(d);
     }
     if (USART_GetITStatus(USART1, USART_IT_TC) != RESET)

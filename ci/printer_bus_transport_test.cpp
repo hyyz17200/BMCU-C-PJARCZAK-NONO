@@ -15,6 +15,25 @@ static void interrupt()
     USART1_IRQHandler();
     irq_restore_wch(state);
 }
+// Model the enabled IRQ sources, including ORE's level request through RXNEIE.
+// Flags are injected by the test; this does not prove how silicon reaches them.
+static bool irq_pending()
+{
+    const uint32_t status = USART1->STATR;
+    const uint32_t enabled = USART1->enabled_interrupts;
+    return ((enabled & USART_IT_RXNE) && (status & (USART_FLAG_RXNE | USART_FLAG_ORE))) ||
+           ((enabled & USART_IT_TC) && (status & USART_IT_TC));
+}
+static unsigned service_pending_interrupts()
+{
+    unsigned calls = 0;
+    while (irq_pending() && calls < 8u) // Bound a broken driver's IRQ storm in the test.
+    {
+        interrupt();
+        ++calls;
+    }
+    return calls;
+}
 static void receive(uint8_t byte, uint32_t errors = 0)
 {
     USART1->DATAR.value = byte;
@@ -49,8 +68,8 @@ int main()
     bus_init();
     request[3] = bus_crc8(request, 3);
     CHECK(USART1->enabled_interrupts & USART_IT_RXNE);
-    CHECK(USART1->enabled_interrupts & USART_IT_ERR);
-    CHECK(USART1->enabled_interrupts & USART_IT_PE);
+    CHECK(!(USART1->enabled_interrupts & USART_IT_ERR));
+    CHECK(!(USART1->enabled_interrupts & USART_IT_PE));
     CHECK(!(USART1->CTLR3 & USART_DMAReq_Rx));
     CHECK(DMA1_Channel5->CNTR == 0);
 
@@ -92,6 +111,37 @@ int main()
     CHECK(!(USART1->STATR & USART_FLAG_ORE));
     frame(); CHECK(bus_port_to_host.recv_data_len == 8); release();
 
+    // Error status can precede RXNE. Even a simultaneous TX completion must
+    // not read stale DATAR or clear the pending error before its byte arrives.
+    for (uint32_t early_error : {USART_FLAG_PE, USART_FLAG_PE | USART_FLAG_NE, USART_FLAG_FE})
+    for (bool tx_complete : {false, true})
+    {
+        receive(0x3d); receive(0xc5); // An incomplete frame must be dropped later.
+        if (tx_complete) send();
+        USART1->DATAR.value = 0x3d; // Stale register contents, not a received byte.
+        USART1->STATR |= early_error | (tx_complete ? USART_IT_TC : 0u);
+        const unsigned reads = USART1->DATAR.reads;
+        interrupt();
+        CHECK(USART1->DATAR.reads == reads);
+        CHECK((USART1->STATR & early_error) == early_error);
+        CHECK(!(USART1->STATR & USART_FLAG_RXNE));
+        CHECK(stopped()); // TC still releases DE without waiting for RXNE.
+
+        // A later IRQ before RXNE must still leave the error and DATAR alone.
+        interrupt();
+        CHECK(USART1->DATAR.reads == reads);
+        CHECK((USART1->STATR & early_error) == early_error);
+
+        receive(0x3d); // RXNE arrives with the pending error; reject this sync byte.
+        CHECK(USART1->DATAR.reads == reads + 1);
+        CHECK(!(USART1->STATR & (15u | USART_FLAG_RXNE)));
+        for (unsigned i = 1; i < sizeof(request); ++i) receive(request[i]);
+        CHECK(bus_port_to_host.recv_data_len == 0);
+        frame(); CHECK(bus_port_to_host.recv_data_len == 8);
+        CHECK(memcmp(bus_port_to_host.bus_recv_data_ptr, request, 8) == 0);
+        release();
+    }
+
     // A damaged fast heartbeat must not survive in the parser's skip state.
     request[4] = 0x20;
     for (unsigned i = 0; i < 5; ++i) receive(request[i]);
@@ -100,6 +150,54 @@ int main()
     CHECK(heartbeats == 0);
     frame(); CHECK(heartbeats == 1);
     request[4] = 0x21;
+
+    // ORE must release its IRQ even with PE and no later byte to supply RXNE.
+    // A ready byte needs no extra discard; an early PE may have lost its label.
+    for (bool rx_ready : {false, true})
+    for (bool tx_complete : {false, true})
+    {
+        frame(); // Keep a previously published frame intact through fault recovery.
+        published = bus_port_to_host.bus_recv_data_ptr;
+        receive(0x3d); receive(0xc5);
+        if (tx_complete) send();
+        USART1->DATAR.value = 0x3d;
+        USART1->STATR |= USART_FLAG_ORE | USART_FLAG_PE |
+                        (rx_ready ? USART_FLAG_RXNE : 0u) | (tx_complete ? USART_IT_TC : 0u);
+        const unsigned reads = USART1->DATAR.reads;
+        CHECK(service_pending_interrupts() == 1u);
+        CHECK(!irq_pending()); // No further receive event is needed to resume the main loop.
+        CHECK(USART1->DATAR.reads == reads + 1);
+        CHECK(!(USART1->STATR & (15u | USART_FLAG_RXNE)));
+        CHECK(stopped());
+        CHECK(bus_port_to_host.bus_recv_data_ptr == published);
+        CHECK(bus_port_to_host.recv_data_len == 8);
+        CHECK(memcmp(published, request, 8) == 0);
+        release();
+
+        // Cleanup without a new byte, and a TX-complete IRQ, must not consume
+        // the pending one-byte discard or leave an interrupt request asserted.
+        USART1->STATR |= USART_FLAG_ORE;
+        CHECK(service_pending_interrupts() == 1u);
+        send(); USART1->STATR |= USART_IT_TC;
+        CHECK(service_pending_interrupts() == 1u);
+        CHECK(!irq_pending() && stopped());
+
+        uint8_t heartbeat[sizeof(request)];
+        memcpy(heartbeat, request, sizeof(request));
+        heartbeat[4] = 0x20;
+        const uint16_t crc = bus_crc16(heartbeat, sizeof(heartbeat) - 2u);
+        heartbeat[6] = (uint8_t)crc;
+        heartbeat[7] = (uint8_t)(crc >> 8);
+        const unsigned before = heartbeats;
+        for (uint8_t b : heartbeat) receive(b);
+        // The unlabelled next byte must not start even a fast heartbeat frame.
+        CHECK(heartbeats == before + (rx_ready ? 1u : 0u));
+        CHECK(bus_port_to_host.recv_data_len == 0);
+        // The discard is consumed once: the following ordinary frame survives.
+        frame(); CHECK(bus_port_to_host.recv_data_len == 8);
+        CHECK(memcmp(bus_port_to_host.bus_recv_data_ptr, request, 8) == 0);
+        release();
+    }
 
     // Startup clears stale TX flags, leaves other DMA channels alone and sends now.
     DMA1->INTFR = DMA1_FLAG_TE4 | DMA1_FLAG_TC4 | DMA1_FLAG_HT4 | DMA1_FLAG_TE5;
