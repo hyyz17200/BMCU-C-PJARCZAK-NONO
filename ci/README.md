@@ -23,13 +23,14 @@ Run `python ci/test_unload_hold.py` to compile the whole production
 with `set_motion()` from `src/bambu_bus_ams.cpp` and the loaded-channel state
 from `src/main.cpp` extracted verbatim, in DM and non-DM configurations. A small
 filament model runs an A1 filament change: channel 1 is unloaded, channel 4 is
-loaded and prints. From the end of the unload until another channel reaches
-on_use, the printer loads channel 1 again, or the filament is taken out, nothing
-may feed channel 1, including a DM Stage-2 armed while it printed; a raised
-buffer is still pulled back, and after the change the V10.5 idle control applies
-again. Every unload must take the tip past the splitter, also with one empty key
-reading in the middle of the pull back. The model does not establish printer or
-motor acceptance.
+loaded and prints. From the end of the unload until the printer uses channel 1
+again, the user starts an auto-unload on it, or the filament is taken out,
+nothing may feed channel 1, including a DM Stage-2 armed while it printed; this
+holds while channel 4 loads and prints, since on_use can come before its filament
+reaches the extruder. A raised buffer is still pulled back, and after the
+auto-unload gesture the V10.5 idle control applies again. Every unload must take
+the tip past the splitter, also with one empty key reading in the middle of the
+pull back. The model does not establish printer or motor acceptance.
 
 Run `python ci/test_build_tools.py` with Python 3 and Bash (Git Bash on Windows).
 It injects build and publication failures, checks path protection and dependency

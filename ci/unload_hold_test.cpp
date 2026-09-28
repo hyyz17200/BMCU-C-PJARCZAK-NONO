@@ -136,7 +136,8 @@ int main(int argc, char** argv)
     const bool reload   = !strcmp(s, "reload");        // the printer loads channel 1 again
     const bool removal  = !strcmp(s, "removal");       // channel 1 taken out, a new spool inserted
     const bool dropout  = !strcmp(s, "pullback_dropout"); // one empty key reading during the pull back
-    if (!stale && !window && !raised && !reload && !removal && !dropout && strcmp(s, "baseline"))
+    const bool gesture  = !strcmp(s, "gesture");       // auto-unload gesture on channel 1, then a pushed buffer
+    if (!stale && !window && !raised && !reload && !removal && !dropout && !gesture && strcmp(s, "baseline"))
     {
         fprintf(stderr, "unknown scenario\n");
         return 2;
@@ -157,7 +158,7 @@ int main(int argc, char** argv)
     uint32_t t_park = 0, t_hold_end = 0;
     bool stage2_after_park = false;
     double tip_park = 0.0, gear_park = 0.0, max_tip = -1e9, max_gear_held = -1e9;
-    double gear_hold_end = 0.0, gear_2s_after_hold = 0.0, gear_raise = 0.0, min_gear_raise = 1e9, gear_spool = 0.0;
+    double gear_raise = 0.0, min_gear_raise = 1e9, gear_spool = 0.0, gear_abort = 0.0;
     filament_now_position_enum last = filament_now_position[0];
 
     for (uint32_t t = 0; t < 16000u; t++)
@@ -176,6 +177,11 @@ int main(int argc, char** argv)
         if (window && t_park) buffer_forced = 20.0;
         if (raised && t >= 9000u && t < 9300u) buffer_forced = 90.0;
         if (raised && t == 9000u) gear_raise = gear;
+        // Lift the buffer, let it back to the middle within 1 s (auto-unload starts), then push it down (abort).
+        if (gesture && t >= 13000u && t < 13200u) buffer_forced = 90.0;
+        if (gesture && t >= 13200u && t < 13500u) buffer_forced = 50.0;
+        if (gesture && t >= 13500u) buffer_forced = 20.0;
+        if (gesture && t == 13500u) gear_abort = gear;
 
         extruder = 0.0;
         if (t >= 3000u && t < 4500u && tip > 0.0) extruder = -30.0; // cut: the extruder pushes it back up
@@ -214,25 +220,28 @@ int main(int argc, char** argv)
             check(g_unload_hold[0] == 1u, "the finished unload starts the hold");
         }
         last = pos;
-        if (t_park && !t_hold_end && !g_unload_hold[0]) { t_hold_end = t; gear_hold_end = gear; }
+        if (t_park && !t_hold_end && !g_unload_hold[0]) t_hold_end = t;
         if (t_park && tip > max_tip) max_tip = tip;
         if (t_park && !t_hold_end && gear > max_gear_held) max_gear_held = gear;
-        if (t_hold_end && t == t_hold_end + 2000u) gear_2s_after_hold = gear;
         if (raised && t >= 9000u && t < 9300u && gear < min_gear_raise) min_gear_raise = gear;
     }
 
     check(t_park != 0u, "channel 1 was unloaded");
     check(tip_park < -80.0, "the unload took the tip past the splitter");
-    check(t_hold_end != 0u, "the hold ended");
     check(max_gear_held - gear_park < 0.5, "no feeding while the hold lasts");
     check(!stage2_after_park, "no Stage-2 push after the unload");
 
-    if (!reload && !removal)
-        check(t_hold_end >= 11000u, "the hold lasts until channel 4 prints");
-    if (!window && !reload && !removal)
+    if (!reload && !removal && !gesture)
+    {
+        // Channel 4 reaching on_use (at 11000 ms) is no sign that its load is done.
+        check(t_hold_end == 0u, "loading and printing channel 4 do not end the hold");
         check(max_tip - tip_park < 2.0, "channel 1 stays behind the splitter while channel 4 prints");
-    if (window)
-        check(gear_2s_after_hold - gear_hold_end > 5.0, "after the change the V10.5 idle control feeds again");
+    }
+    if (gesture)
+    {
+        check(t_hold_end >= 13200u && t_hold_end < 13300u, "the auto-unload gesture ends the hold");
+        check(gear - gear_abort > 5.0, "after the gesture the V10.5 idle control feeds again");
+    }
     if (raised)
         check(gear_raise - min_gear_raise > 5.0, "a raised buffer is still pulled back during the hold");
     if (reload)

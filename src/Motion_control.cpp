@@ -336,10 +336,11 @@ static uint32_t g_hold_t0_ticks = 0;
 static uint64_t g_last_on_use_exit_ms[4] = {0,0,0,0};
 
 // Unload hold. When a printer unload ends, the filament waits just past the shared splitter and the printer
-// already treats the path as free for the next channel. Until that filament change is over, the idle control
-// must not feed this channel (DM autoload, idle buffer PID); pulling a raised buffer back still runs. The change
-// is over when another channel reaches on_use, when the printer drives this channel again, or when the filament
-// is taken out (both switches open for UNLOAD_HOLD_REMOVED_MS).
+// already treats the path as free for the next channel. From then on the idle control must not feed this channel
+// (DM autoload, idle buffer PID); pulling a raised buffer back still runs. Another channel reaching on_use does
+// not end it: set_motion() reports on_use before that filament has reached the extruder. The hold ends when the
+// printer drives this channel again, when the user starts an auto-unload on it (the V10.5 idle control applies
+// again), or when the filament is taken out (both switches open for UNLOAD_HOLD_REMOVED_MS).
 static uint8_t  g_unload_hold[4]          = {0, 0, 0, 0};
 static uint64_t g_unload_hold_empty_t0[4] = {0ull, 0ull, 0ull, 0ull};
 static constexpr uint64_t UNLOAD_HOLD_REMOVED_MS = 1000ull;
@@ -375,12 +376,8 @@ static void unload_hold_update(uint64_t now_ms)
 
         bool over = !filament_channel_inserted[ch];
 
-        if (n < kChCount)
-        {
-            const _filament_motion m = A.filament[n].motion;
-            if ((n != ch) && (m == _filament_motion::on_use)) over = true;
-            if ((n == ch) && (m != _filament_motion::idle))   over = true;
-        }
+        if ((n == ch) && (A.filament[ch].motion != _filament_motion::idle)) over = true;
+        if (auto_unload_active[ch]) over = true;
 
         if (MC_ONLINE_key_stu[ch] != 0u)             g_unload_hold_empty_t0[ch] = 0ull;
         else if (g_unload_hold_empty_t0[ch] == 0ull) g_unload_hold_empty_t0[ch] = now_ms;

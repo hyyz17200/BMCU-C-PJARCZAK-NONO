@@ -8,7 +8,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCENARIOS = ("baseline", "stale_stage2", "window", "raised_buffer", "reload", "removal", "pullback_dropout")
+SCENARIOS = ("baseline", "stale_stage2", "window", "raised_buffer", "reload", "removal", "pullback_dropout",
+             "gesture")
 
 
 def between(source, start, end):
