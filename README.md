@@ -15,6 +15,13 @@ This repository, [hyyz17200/BMCU-C-PJARCZAK-NONO](https://github.com/hyyz17200/B
 # Changes
 
 - Pre-build firmwares are removed
+- LED strips refresh at 10 ms, and a strip is sent again only when its shown colour changes, so a steady channel leaves the printer bus free.
+- The printer-bus UART recovers from transmit faults and line errors. A byte that only carries the noise flag is kept and checked by parity and CRC. A parity error is cleared once that byte is ready to read.
+- A failed AS5600 read is skipped, and the last good angle stays in place. The sample is left out of the distance, the speed, and the direction check. A missed read used to be taken as angle 0, which invented a move of up to about 12 mm.
+- Filament mileage used to be a running single-precision float. Each encoder step was added into that float. After a long print the total is so large that one step is smaller than the float can still represent, so the addition is dropped. Those lost steps accumulate, and the recorded length drifts far from the filament that actually passed the sensor. Around 2 km the steps at normal feed speed no longer move the float. By about 5 km a retract leaves the recorded length sitting on the old value while the filament has already moved. Pull-back distance was taken from that float, so an unload finished away from the position it is supposed to reach. Mileage is now a signed 64-bit count. Every accepted step stays in that integer, so the length keeps its precision for the life of a spool. Unload retract measures the same count and stops at that position: on the SOLO build, 95 mm, about 5 mm past the splitter. The meter sent to the printer is a single-precision conversion of this count, for display only.
+- In use here, an unload sometimes finished and the same channel fed the filament straight back. The next channel was already on its way, and the two filaments jammed together in the five-way splitter. A finished unload now holds that channel, so this feed-back cannot start. Lifting the buffer for auto-unload releases the hold, and the usual idle control runs again. The printer driving that same channel, or the filament being taken out, also releases it. A pull-back ends on an empty key only after the key stays empty for 60 ms.
+- Debug-log builds give the debug UART handler C linkage, so the first byte on that port does not hang the CPU.
+- Variant builds reject an invalid mode or retract length before compile. Platform and SDK revisions are pinned, and build output stays under `dist/`.
 
 **The notes below are the original project's usage guide, kept so this copy can still be used. They describe Paweł Jarczak's firmware. The Ko-fi and Revolut links fund his work.**
 
