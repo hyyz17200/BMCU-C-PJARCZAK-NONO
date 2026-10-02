@@ -321,6 +321,62 @@ static uint32_t g_hold_t0_ticks = 0;
 // kiedy kanał OSTATNIO wyszedł z on_use (0 = nigdy, 1 = marker "był kiedykolwiek") (patch do wersji BMCU DM przy automatycznej zmianie filamentu gdy się skończy, żeby ekstruder nie trzymał filamentu)
 static uint64_t g_last_on_use_exit_ms[4] = {0,0,0,0};
 
+// Unload hold. When a printer unload ends, the filament waits just past the shared splitter and the printer
+// already treats the path as free for the next channel. From then on the idle control must not feed this channel
+// (DM autoload, idle buffer PID); pulling a raised buffer back still runs. Another channel reaching on_use does
+// not end it: set_motion() reports on_use before that filament has reached the extruder. The hold ends when the
+// printer drives this channel again, when the user starts an auto-unload on it (the V10.5 idle control applies
+// again), or when the filament is taken out (both switches open for UNLOAD_HOLD_REMOVED_MS).
+static uint8_t  g_unload_hold[4]          = {0, 0, 0, 0};
+static uint64_t g_unload_hold_empty_t0[4] = {0ull, 0ull, 0ull, 0ull};
+static constexpr uint64_t UNLOAD_HOLD_REMOVED_MS = 1000ull;
+
+static void unload_hold_start(uint8_t ch)
+{
+    g_unload_hold[ch]          = 1u;
+    g_unload_hold_empty_t0[ch] = 0ull;
+#if BMCU_DM_TWO_MICROSWITCH
+    // Parked through both switches is loaded for the autoload too. A Stage-2 armed while the printer used the
+    // channel (dm_loaded cleared) would otherwise push the filament 120 mm back as soon as the hold ends.
+    if (MC_ONLINE_key_stu[ch] == 1u)
+    {
+        dm_loaded[ch]            = 1u;
+        dm_fail_latch[ch]        = 0u;
+        dm_auto_state[ch]        = DM_AUTO_IDLE;
+        dm_auto_try[ch]          = 0u;
+        dm_auto_t0_ms[ch]        = 0ull;
+        dm_auto_remain_m[ch]     = 0.0f;
+        dm_loaded_drop_t0_ms[ch] = 0ull;
+    }
+#endif
+}
+
+static void unload_hold_update(uint64_t now_ms)
+{
+    const auto &A = ams[motion_control_ams_num];
+    const uint8_t n = A.now_filament_num;
+
+    for (uint8_t ch = 0; ch < kChCount; ch++)
+    {
+        if (!g_unload_hold[ch]) continue;
+
+        bool over = !filament_channel_inserted[ch];
+
+        if ((n == ch) && (A.filament[ch].motion != _filament_motion::idle)) over = true;
+        if (auto_unload_active[ch]) over = true;
+
+        if (MC_ONLINE_key_stu[ch] != 0u)             g_unload_hold_empty_t0[ch] = 0ull;
+        else if (g_unload_hold_empty_t0[ch] == 0ull) g_unload_hold_empty_t0[ch] = now_ms;
+        else if ((now_ms - g_unload_hold_empty_t0[ch]) >= UNLOAD_HOLD_REMOVED_MS) over = true;
+
+        if (over)
+        {
+            g_unload_hold[ch]          = 0u;
+            g_unload_hold_empty_t0[ch] = 0ull;
+        }
+    }
+}
+
 extern void RGB_update();
 
 static inline bool all_no_filament()
@@ -1070,9 +1126,19 @@ public:
 
         if (motion == filament_motion_enum::filament_motion_pressure_ctrl_idle)
         {
+            // Unload hold: no feeding; the idle retract of a raised buffer (above 70 %) still runs.
+            if (g_unload_hold[CHx] && !((MC_ONLINE_key_stu[CHx] != 0u) && (MC_PULL_stu[CHx] > 0)))
+            {
+                PID_speed.clear();
+                PID_pressure.clear();
+                pwm_zeroed = 1;
+                x_prev[CHx] = 0.0f;
+                Motion_control_set_PWM(CHx, 0);
+                return;
+            }
         #if BMCU_DM_TWO_MICROSWITCH
                     // --- DM autoload (Stage1 + Stage2) ---
-                    if (filament_channel_inserted[CHx] && (dm_loaded[CHx] == 0u))
+                    if (filament_channel_inserted[CHx] && (dm_loaded[CHx] == 0u) && !g_unload_hold[CHx])
                     {
                         const uint8_t ks = MC_ONLINE_key_stu[CHx];
                         auto &A = ams[motion_control_ams_num];
@@ -2119,6 +2185,11 @@ static float  before_pb_last_m[4]      = {0,0,0,0};
 static float  before_pb_retracted_m[4] = {0,0,0,0};
 static int8_t before_pb_sign[4]        = {0,0,0,0};
 
+// A pull back only ends early on 'no filament' once the key has read empty this long. One bad reading would
+// otherwise end the unload with the tip still in the shared splitter, and the printer is told it is done.
+static uint64_t pull_back_empty_t0[4] = {0ull, 0ull, 0ull, 0ull};
+static constexpr uint64_t PULL_BACK_EMPTY_CONFIRM_MS = 60ull;
+
 static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
 {
     bool wait = false;
@@ -2135,16 +2206,23 @@ static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
             const float target = filament_pull_back_target[i];
             const float d = absf(A.filament[i].meters - filament_pull_back_meters[i]);
 
+            if (MC_ONLINE_key_stu[i] != 0)          pull_back_empty_t0[i] = 0ull;
+            else if (pull_back_empty_t0[i] == 0ull) pull_back_empty_t0[i] = time_now;
+            const bool empty_confirmed = (pull_back_empty_t0[i] != 0ull) &&
+                                         ((time_now - pull_back_empty_t0[i]) >= PULL_BACK_EMPTY_CONFIRM_MS);
+
             if (target <= 0.0f || d >= target)
             {
+                pull_back_empty_t0[i] = 0ull;
                 g_pull_remain_m[i]  = 0.0f;
                 g_pull_speed_set[i] = -PULL_V_FAST;
                 MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 100, time_now);
                 filament_pull_back_target[i] = motion_control_pull_back_distance;
                 filament_now_position[i] = filament_redetect;
             }
-            else if (MC_ONLINE_key_stu[i] == 0)
+            else if (empty_confirmed)
             {
+                pull_back_empty_t0[i] = 0ull;
                 g_pull_remain_m[i]  = 0.0f;
                 g_pull_speed_set[i] = -PULL_V_FAST;
                 MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 100, time_now);
@@ -2184,6 +2262,8 @@ static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
 
                 A.filament_use_flag = 0x00;
                 A.filament[i].motion = _filament_motion::idle;
+
+                unload_hold_start(i);
             }
 
             wait = true;
@@ -2426,6 +2506,8 @@ static inline void stu_apply_baseline(int error, uint64_t now_ms)
 
 static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
 {
+    unload_hold_update(time_now);
+
 #if BMCU_DM_TWO_MICROSWITCH
     for (uint8_t ch = 0; ch < kChCount; ch++)
     {
