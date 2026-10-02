@@ -12,6 +12,7 @@
 uint16_t bus_host_device_type=0x0000;
 
 DMA_InitTypeDef bus_uart1_dma_init_structure;
+static bool printer_rx_discard_next = false; // Used only by the ISR after bus_init().
 void bus_uart1_init();
 void bus_uart1_dma_send(uint8_t *data, uint16_t length);
 
@@ -26,6 +27,7 @@ void bus_init()
 {
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_CRC, ENABLE);
     bus_crc_init();
+    printer_rx_discard_next = false;
     bus_port_to_host.init(bus_port_to_host_send_func);
     bus_uart1_init();
 }
@@ -112,10 +114,24 @@ void bus_uart1_dma_send(unsigned char *data, uint16_t length)
 extern "C" void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USART1_IRQHandler(void)
 {
-    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
+    const uint16_t status = (uint16_t)USART1->STATR;
+    // NE still delivers the majority-voted byte: parity and the frame CRCs judge it.
+    const uint16_t errors = status & (USART_FLAG_ORE | USART_FLAG_FE | USART_FLAG_PE);
+    const bool rx_ready = (status & USART_FLAG_RXNE) != 0u;
+    // ORE holds the RXNE interrupt request active, even if no byte is ready.
+    // Clear it without waiting for another byte, or the main loop is starved.
+    const bool overrun = (status & USART_FLAG_ORE) != 0u;
+    if (rx_ready || overrun)
     {
+        // STATR then DATAR clears RXNE and the RX error flags. Read only once.
         const uint8_t d = (uint8_t)USART_ReceiveData(USART1);
-        if (bus_port_to_host.idle) uart1_port_irq(d);
+        const bool discard = printer_rx_discard_next;
+        if (rx_ready) printer_rx_discard_next = false;
+        // An ORE cleanup before RXNE may clear PE for a byte still arriving.
+        // Discard the next received byte once, even if its error flag is now clear.
+        else if ((status & USART_FLAG_PE) != 0u) printer_rx_discard_next = true;
+        if (errors != 0u || discard) bus_port_to_host.reset_rx_parser();
+        else if (bus_port_to_host.idle) uart1_port_irq(d);
     }
     if (USART_GetITStatus(USART1, USART_IT_TC) != RESET)
     {

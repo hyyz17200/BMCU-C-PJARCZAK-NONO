@@ -58,6 +58,17 @@ public:
         port_send_datas = _port_send_datas;
     }
 
+    // Called from the RX ISR after a hardware error. Keep any published frame.
+    void reset_rx_parser()
+    {
+        _index = 0;
+        length = 999;
+        data_length_index = 0;
+        data_CRC8_index = 0;
+        irq_package_type = _bus_data_type::none;
+        drop_bytes = 0;
+    }
+
     void irq(uint8_t data)
     {
         if (drop_bytes > 0)
