@@ -5,6 +5,7 @@
 #include "Flash_saves.h"
 #include "_bus_hardware.h"
 #include "many_soft_AS5600.h"
+#include "as5600_jump.h"
 #include "app_api.h"
 #include "hal/time_hw.h"
 
@@ -177,6 +178,8 @@ static uint8_t g_as5600_fail[4]     = {0,0,0,0};
 static uint8_t g_as5600_okstreak[4] = {0,0,0,0};
 static constexpr uint8_t kAS5600_FAIL_TRIP   = 3;
 static constexpr uint8_t kAS5600_OK_RECOVER  = 2;
+// src/as5600_jump.h rebases after the same number of implausible steps in a row.
+static_assert(AS5600_JUMP_REBASE == kAS5600_FAIL_TRIP, "jump rebase != health gate trip");
 static inline bool AS5600_is_good(uint8_t ch) { return g_as5600_good[ch] != 0; }
 
 // ---- liniowe zwalnianie końcówki + minimalny PWM ----
@@ -2069,6 +2072,7 @@ void AS5600_distance_updata(uint32_t now_ticks)
     static uint32_t last_valid_ticks[4] = {0,0,0,0};
     static uint32_t last_poll_ticks = 0u;
     static uint8_t  was_ok[4] = {0,0,0,0};
+    static uint8_t  jumps[4] = {0,0,0,0};
     static uint32_t last_stu_ticks = 0u;
 
     uint32_t tpm = time_hw_tpms;
@@ -2125,6 +2129,7 @@ void AS5600_distance_updata(uint32_t now_ticks)
             as5600_distance_save[i] = MC_AS5600.raw_angle[i];
             speed_as5600[i] = 0.0f;
             was_ok[i] = 1u;
+            jumps[i] = 0u;
             last_valid_ticks[i] = sample_ticks;
             continue;
         }
@@ -2138,8 +2143,19 @@ void AS5600_distance_updata(uint32_t now_ticks)
 
         const uint32_t dt_ticks = sample_ticks - last_valid_ticks[i];
         if (!dt_ticks) continue;
+
+        // An implausible step is skipped: baseline, its time and the speed are kept (src/as5600_jump.h).
+        const uint8_t step = as5600_step_check(&jumps[i], diff, dt_ticks / tpus);
+        if (step == AS5600_STEP_REJECT) continue;
+
         last_valid_ticks[i] = sample_ticks;
         as5600_distance_save[i] = now;
+        if (step == AS5600_STEP_REBASE)
+        {
+            speed_as5600[i] = 0.0f;
+            continue;
+        }
+
         as5600_odometer_count[i] += diff;
         if (dt_ticks != cached_dt_ticks)
         {

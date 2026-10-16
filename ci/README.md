@@ -1,5 +1,11 @@
 # Local hardening checks
 
+Run `pio test -e native` (needs a host C compiler on PATH) for the AS5600 step
+plausibility tests (`test/test_as5600_jump`, `src/as5600_jump.h`): a corrupted
+in-range read, a read of 0 and a corrupted baseline are not counted, and real
+motion up to 393 mm/s, also after a 10 ms main-loop stall, always is. The
+`native` target is not flashable.
+
 Run `python ci/test_build_tools.py` with Python 3 and Bash (Git Bash on Windows).
 It injects build and publication failures, checks path protection and dependency
 validation, and exercises all 1020 packaging configurations (three load modes,
