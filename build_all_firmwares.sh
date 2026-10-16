@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 command -v pio >/dev/null 2>&1 || { echo "ERROR: nie ma 'pio' w PATH"; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "ERROR: nie ma 'python3' w PATH"; exit 1; }
 
-OUT_DIR="firmwares"
+OUT_DIR="dist/firmwares"
 PIO_ENV="fw"
 
 TXT_MODE="which_to_choose_mode.txt"
@@ -54,21 +54,23 @@ build_and_copy() {
   BMCU_SOFT_LOAD="${soft_load}" \
   pio run -e "${PIO_ENV}"
 
-  local src=".pio/build/${PIO_ENV}/firmware.bin"
+  local src="${PLATFORMIO_BUILD_DIR:-.pio/build}/${PIO_ENV}/firmware.bin"
   [[ -f "${src}" ]] || { echo "ERROR: brak ${src}"; exit 1; }
 
   mkdir -p "$(dirname "${out_path}")"
   cp -f "${src}" "${out_path}"
 }
 
-rm -rf "${OUT_DIR}"
-mkdir -p "${OUT_DIR}"
-cp -f "${TXT_MODE}" "${OUT_DIR}/${OUT_GUIDE}"
+# Only this checkout's dist/firmwares can be published. A failed build leaves it intact.
+STAGE_DIR="$(python3 scripts/firmware_output.py begin)"
+trap 'python3 scripts/firmware_output.py cleanup "${STAGE_DIR}"' EXIT
+
+cp -f "${TXT_MODE}" "${STAGE_DIR}/${OUT_GUIDE}"
 
 for mode_spec in "${MODES[@]}"; do
   IFS='|' read -r mode_dir p1s soft_load <<< "${mode_spec}"
 
-  mode_base="${OUT_DIR}/${mode_dir}"
+  mode_base="${STAGE_DIR}/${mode_dir}"
   mkdir -p "${mode_base}"
   cp -f "${TXT_AUTOLOAD}" "${mode_base}/${OUT_GUIDE}"
 
@@ -118,39 +120,8 @@ for mode_spec in "${MODES[@]}"; do
   done
 done
 
-python3 - "${OUT_DIR}" > "${OUT_DIR}/manifest.txt" <<'PYMAN'
-import sys, os, zlib, hashlib
-
-root = sys.argv[1]
-entries = []
-
-for dirpath, _, filenames in os.walk(root):
-    for fn in filenames:
-        p = os.path.join(dirpath, fn)
-        rel = os.path.relpath(p, root).replace(os.sep, "/")
-
-        crc = 0
-        size = 0
-        h = hashlib.sha256()
-
-        with open(p, "rb") as f:
-            while True:
-                b = f.read(1024 * 1024)
-                if not b:
-                    break
-                size += len(b)
-                crc = zlib.crc32(b, crc)
-                h.update(b)
-
-        entries.append((rel, h.hexdigest(), f"{crc & 0xffffffff:08X}", size))
-
-entries.sort(key=lambda x: x[0])
-
-out = sys.stdout
-out.write("# format: SHA256_HEX CRC32_HEX SIZE_BYTES REL_PATH\n")
-for rel, sha256_hex, crc32_hex, size in entries:
-    out.write(f"{sha256_hex} {crc32_hex} {size} {rel}\n")
-PYMAN
+python3 scripts/firmware_output.py publish "${STAGE_DIR}"
+trap - EXIT
 
 echo
 echo "DONE. Wyniki w: ${OUT_DIR}/"
