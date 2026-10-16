@@ -1,161 +1,46 @@
-# BMCU Firmware – Calibration and Compatibility Notes
+# BMCU-C-PJARCZAK-NONO
 
-<p align="center">If BMCU firmware or my other open-source projects are useful to you and you would like to support further development:
-</p>
-<p align="center">
-  <a href="https://ko-fi.com/jarczakpawel">
-    <img src="https://img.shields.io/badge/Support_on-Ko--fi-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white" alt="Support on Ko-fi">
-  </a>
-  &nbsp;
-  <a href="https://revolut.me/paweqxdkx">
-    <img src="https://img.shields.io/badge/Support_via-Revolut-191C1F?style=for-the-badge" alt="Support via Revolut">
-  </a>
-</p>
+**A personal fork of Paweł Jarczak's BMCU 370C firmware.**
 
-> [!WARNING]
-> Bambu Lab is limiting local BMCU interoperability through printer firmware updates.
+This repository, [hyyz17200/BMCU-C-PJARCZAK-NONO](https://github.com/hyyz17200/BMCU-C-PJARCZAK-NONO), is a personal copy kept by [CJ (`hyyz17200`)](https://github.com/hyyz17200).
+
+> [!IMPORTANT]
+> **Original repository:** [github.com/jarczakpawel/BMCU-C-PJARCZAK](https://github.com/jarczakpawel/BMCU-C-PJARCZAK)
 >
-> More information about the certification/authorization restrictions and how printer updates changed BMCU compatibility:
-> [BMCU vs firmware locks](./bmcu-vs-firmware-locks.md)
+> Author: [Paweł Jarczak](https://github.com/jarczakpawel) (`jarczakpawel`)
+>
+> Go the original repo page to find more about guide, and cosider to sponser his work.
+>
 
-## Printer firmware compatibility
+## Changes
 
-> [!TIP]
-> If you do not want the AMS/HMS compatibility error to block a project in the slicer, use **[OrcaStudio](https://github.com/jarczakpawel/OrcaStudio)**.
-> On affected A1 / A1 mini firmware, OrcaStudio ignores the device compatibility error, keeps the project usable and retries sending the interrupted print.
+This fork is based on upstream **V11** (`5b8e235`).
 
-| Printer | Printer firmware | BMCU compatibility                                                                                                                                                                                                                                                                                           |
-|---|---|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **A1 / A1 mini** | `01.05.00.00 – 01.07.02.00` | ✅ **Works normally.** A visible HMS warning may appear, but it does not affect printer operation in any way. The printer must be configured as **AMS**, not AMS Lite.                                                                                                                                                                                                 |
-|| `>= 01.08.00.00` | ✅ **Works.** The printer sends a device compatibility error that blocks the project in the slicer. Use **[OrcaStudio](https://github.com/jarczakpawel/OrcaStudio)** — it ignores this error, does not block the project and retries sending the interrupted print, which resolves the compatibility problem. The printer must be configured as **AMS**, not AMS Lite. |
-| **P1P / P1S** | `<= 01.08.01.00` | ✅ **Works normally.** This is the last firmware before the new authorization mechanism.                                                                                                                                                                                                                      |
-|| `>= 01.08.02.00` | ⚠️ **The first print works and can run for any length of time.** On the next print, BMCU is rejected because it does not pass device certification/authorization. Before another print, reconnect/reset BMCU or restart the printer.                                                                         |
-| **X1 / X1C** | `<= 01.08.02.00` | ✅ **Works normally.** This is the last firmware before the new authorization mechanism.                                                                                                                                                                                                                      |
-|| `>= 01.08.03.00` | ⚠️ **The first print works and can run for any length of time.** On the next print, BMCU is rejected because it does not pass device certification/authorization. Before another print, reconnect/reset BMCU or restart the printer.                                                                         |
-| **P2S** | `<= 01.01.03.00` | ⚠️ **The first print works and can run for any length of time.** It is best to start the print shortly after the printer starts or BMCU is reconnected. Before another print, reconnect/reset BMCU or restart the printer.                                                                                   |
-|| `>= 01.02.00.00` | ❌ **Printing with BMCU does not work.** BMCU is detected and normal manual filament load/unload works, but when starting a print the printer stops at **Preparing AMS** because the required certification/authorization is not satisfied.                                                                   |
-| **H2D** | `<= 01.02.00.00` | ⚠️ **The first print works and can run for any length of time.** It is best to start the print shortly after the printer starts or BMCU is reconnected. Before another print, reconnect/reset BMCU or restart the printer.                                                                                   |
-|| `>= 01.03.00.00` | ❌ **Printing with BMCU does not work.** BMCU is detected and normal manual filament load/unload works, but when starting a print the printer stops at **Preparing AMS** because the required certification/authorization is not satisfied.                                                                   |
-| **X2D** | `01.00.01.00` | ⚠️ **The first print works and can run for any length of time.** Before another print, a restart/reconnect is required. **If you want to use BMCU, do not update the printer — there is currently no normal way to downgrade back to this firmware.**                                                        |
-|  | `>= 01.01.00.00` | ❌ **Printing with BMCU does not work.** BMCU can be detected and normal manual filament load/unload works, but the print stops at **Preparing AMS**.                                                                                                                                                         |
-| **H2S** | Newer firmware | ❌ **Preparing AMS.** BMCU is detected, but printing does not start. The exact last compatible printer firmware has not yet been confirmed.                                                                                                                                                                   |
-| **A2L** | All versions | ❌ **Does not work.**                                                                                                                                                                                                                                                                                         |
+- Prebuilt firmwares are removed. Build output goes to `dist/firmwares`.
+- Variant builds reject an invalid mode, AMS number, or retract length before compiling. The platform, SDK, and Windows toolchain revisions are pinned. With these pins, the unmodified V11 source rebuilds the upstream release binary byte for byte. A matrix build is staged, and it replaces `dist/firmwares` only after every build has succeeded.
+- An AS5600 step faster than any real gear move (more than 150 counts per ms, 863 mm/s) is skipped.
+  - V11 already drops failed reads and reads above 12 bits. A read corrupted inside 0–4095 was still counted as a move of up to 11.8 mm.
+  - One such step is enough to lock the before-pull-back retract count. The pull back that follows can then end short or not run at all, and the tip stays in the splitter.
+  - After three skipped steps in a row, tracking restarts from the current read.
 
-> [!NOTE]
-> **P2S / H2D:** if you do not want to power-cycle the whole printer between prints, you can make a simple switch that disconnects **SigA and SigB at the same time**. Switching both signal lines off and back on allows BMCU to reconnect to the bus without unplugging the printer from power.
+The earlier V10.5-based fork is preserved on branch `bak-before-v11`. V11 provides its own fixes for failed AS5600 reads, count-based motion distances and filament odometer telemetry, pull-back empty confirmation, TX fault recovery, and debug-UART C linkage. This fork uses those upstream implementations.
 
----
+To keep this fork close to upstream, these local protections and optimizations were deliberately not ported:
 
-## Download
+- Persistent unload hold: V11's DM autoload gate prevents stale Stage-2 reactivation, but does not block idle PID forward feeding on a parked channel.
+- WS2812 requested/shown frame caching and the 10 ms refresh limit: this fork uses V11's existing LED cache and bus-idle refresh gate.
+- Per-byte USART RX error handling: V11's DMA transport replaces the old RXNE driver, but does not carry over its explicit ORE/FE/PE recovery.
 
-Please download ready-to-use firmware from the **"Releases"** section (right side of the GitHub page).
-All firmware variants are generated there together with **.txt guides** that explain which build you should choose.
+## Build
 
-Start by selecting the correct printer mode folder first (standard(A1) or high_force_load(P1S)), then choose AUTOLOAD / RGB / slots as usual.
+Build one variant, for example my personal workhorse: standard (A1), AUTOLOAD, filament RGB off, AMS_AUTO, 9.5 cm:
 
-## Flashing
+```sh
+BAMBU_BUS_AMS_NUM=4 AMS_RETRACT_LEN=0.095f BMCU_DM_TWO_MICROSWITCH=1 \
+BMCU_ONLINE_LED_FILAMENT_RGB=0 DBMCU_P1S=0 BMCU_SOFT_LOAD=0 pio run -e fw
+```
 
-To flash any version of the BMCU (USB or TTL) on:
-
-- Windows
-- Linux
-- macOS
-- Android
-
-use **BMCU Flasher**:
-
-https://github.com/jarczakpawel/BMCU-Flasher
-
-Precompiled binaries are available in the **Releases** section.
-
-The flashing process is very simple and **does not require wchisptool**.
-
-You can flash firmware in two ways:
-
-- **Online flashing** directly from the built-in wizard (recommended)  
-  → the flasher downloads the correct firmware automatically, so you **do not need to download any .bin files manually**.
-
-- **Local flashing** using a firmware file you downloaded yourself.
-
-The flasher also supports **Android**, so you can even flash the BMCU directly from your **phone** 🙂
-
-IMPORTANT:
-- Do **NOT** flash the BMCU while it is connected to the printer.
-- Do **NOT** connect or disconnect the BMCU while the printer is powered on (risk of damaging the BMCU and/or the printer mainboard).
-
----
-
-## Filament retraction explanation
-
-Filament retraction must be calculated from the end of the AMS splitter inside the printer
-(the plastic AMS part where four PTFE tubes enter).
-
-Example:
-
-- Distance from BMCU to the end of the AMS splitter: approximately 9.0 cm
-- A 9.5 cm retraction variant is available for AMS_AUTO and AMS_A / AMS_B / AMS_C / AMS_D
-- Choose the retraction length that matches your setup
-
-When calculating your own retraction length:
-
-- Always measure from the end of the AMS splitter
-- Add the required distance plus approximately 9 cm, depending on your setup
-
----
-
-## AMS_AUTO / AMS_A / AMS_B / AMS_C / AMS_D firmware
-
-### AMS_AUTO - recommended
-
-**AMS_AUTO is the recommended option for new installations.**
-
-It works like the original Bambu AMS addressing system - connected BMCU units are **automatically enumerated and assigned their AMS number**.
-
-In most cases, you should use **AMS_AUTO**.
-
-### AMS_A / AMS_B / AMS_C / AMS_D - legacy
-
-These are the old manually assigned firmware variants.
-
-They are now considered **legacy** and are no longer the recommended configuration.
-
-Use them only if **AMS_AUTO does not work correctly with your setup**.
-
----
-
-## Calibration / Re-calibration
-
-Correct calibration is important because after calibration BMCU knows the **exact movement limits of the buffer on every channel**.
-
-Before starting calibration, remove filament from all channels.
-
-To enter calibration mode:
-
-1. Hold any one buffer for approximately **5 seconds**.
-2. At first, **do not move anything**. BMCU records the current neutral / center position of every buffer.
-3. When the channel LED starts **blinking blue**, push that channel's buffer **all the way in**, hold it there for approximately **1 second**, then release it.
-4. When the channel LED starts **blinking red**, pull the buffer **all the way out**, hold it there for approximately **1 second**, then release it.
-5. Repeat the same procedure for every channel.
-
-After calibration, BMCU knows the exact **minimum, center and maximum buffer positions** for each individual channel.
-
-You can repeat this calibration procedure at any time if necessary.
-
----
-
-## Safety and usage notes
-
-- Do not flash BMCU while it is connected to the printer
-- Do not disconnect BMCU while the printer is powered on
-- Do not update printer firmware while BMCU is connected
-- Connect/disconnect the BMCU ONLY when the printer is completely powered off (unplugged). Doing this while powered can damage the BMCU and/or the printer mainboard.
-
-These recommendations are based on community reports.
-Not all failure scenarios have been tested.
-
-Changing the printer mode from AMS Lite to AMS while BMCU was connected did not cause issues in testing, but this is not recommended.
-
----
+`BAMBU_BUS_AMS_NUM` is 0–3 for AMS_A–AMS_D, or 4 for AMS_AUTO. Set `BMCU_SOFT_LOAD=1` for the soft_load(A1) mode, or `DBMCU_P1S=1` for high_force_load(P1S). Do not set both. `./build_all_firmwares.sh` builds the whole matrix. Host checks are described in [`ci/README.md`](./ci/README.md).
 
 ## Disclaimer
 
