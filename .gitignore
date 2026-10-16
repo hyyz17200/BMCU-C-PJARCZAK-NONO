@@ -1,2 +1,6 @@
 .pio/
 .idea/
+agent_docs/
+dist/
+*.bak
+__pycache__/
